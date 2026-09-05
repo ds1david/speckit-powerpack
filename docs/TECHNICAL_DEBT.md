@@ -4,9 +4,9 @@ PowerPack treats technical debt as a deliberate, auditable deferral of **non-blo
 
 ## Policy precedence
 
-The PowerPack policy is the minimum safety floor. Projects may declare stricter rules through `.specify/powerpack/technical-debt.json -> project_policy_paths`, but a project policy cannot weaken these invariants.
+The installed PowerPack floor is `.specify/powerpack/technical-debt-policy.md`. Projects may declare stricter rules through `.specify/powerpack/technical-debt.json -> project_policy_paths`, but project policy cannot weaken the PowerPack invariants.
 
-When a project has an existing debt-governance document, the debt skills read it before acting and combine it with this baseline. Project-specific owners, prefixes, domains and extra required fields remain local to the project.
+When a project already has a debt-governance document, the debt skills read it before acting and combine it with the baseline. Project-specific owners, prefixes, domains, dependency directions and extra required fields remain local to the project.
 
 ## Creation gate
 
@@ -23,6 +23,8 @@ A new debt item may be created only when all of the following are true:
 9. duplicates and closely related items have been checked first.
 
 If any of items 1–4 fail, the work belongs to the current delivery flow and MUST be fixed there instead of becoming debt.
+
+This is intentionally stricter than simply labeling inconvenient work as "technical debt". The act of deferral itself must be justified and auditable.
 
 ## Required fields
 
@@ -66,14 +68,30 @@ IDs are stable, never reused or renumbered. Historical description and provenanc
 
 When code validation is required, use the PowerPack capability-selected quality gate rather than a language/framework-specific command embedded in the debt skill. Residual work prevents full closure; do not hide residuals by declaring the parent item resolved.
 
-## Default storage
+## Storage and template
 
-The default backlog is `docs/technical-debt.md`. Projects may change this in `.specify/powerpack/technical-debt.json`.
+Default configuration:
 
-The debt skills are:
+```json
+{
+  "storage_format": "markdown-v1",
+  "backlog_path": "docs/technical-debt.md",
+  "template_path": ".specify/powerpack/technical-debt-template.md",
+  "id_prefix": "TD",
+  "project_policy_paths": []
+}
+```
 
-- `speckit-debt-create`
-- `speckit-debt-list`
-- `speckit-debt-consult`
-- `speckit-debt-start`
-- `speckit-debt-close`
+When the default Markdown backlog does not exist, `speckit-debt-create` copies the canonical installed template before appending the first item. This prevents every project from inventing a different format by accident.
+
+Projects with an established format may point `backlog_path` at their existing backlog and add their governance document to `project_policy_paths`. If a non-default storage format has no deterministic project adapter/contract, creation must return `BLOCKED_CONFIGURATION` rather than guess how to write it.
+
+## Skills
+
+- `speckit-debt-create` — validates that work is legitimately deferrable, deduplicates/groups it and records a new item.
+- `speckit-debt-list` — read-only inventory/filter/readiness view.
+- `speckit-debt-consult` — exact item, provenance, evidence, relationships and governance conflicts.
+- `speckit-debt-start` — readiness gate and transition to `IN_PROGRESS` without automatically creating a SPEC.
+- `speckit-debt-close` — evidence-based transition to `RESOLVED`.
+
+For customization examples see [`CUSTOMIZATION.md`](CUSTOMIZATION.md); for the lifecycle/process map see [`PROCESS_ARCHITECTURE.md`](PROCESS_ARCHITECTURE.md).
