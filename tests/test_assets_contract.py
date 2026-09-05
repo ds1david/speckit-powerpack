@@ -80,11 +80,12 @@ def test_full_cycle_defaults_preserve_safety_invariants():
     assert config["phases"]["implement_review"] is True
 
 
-def test_model_routing_covers_full_cycle_and_debt_without_changing_review_profile():
+def test_model_routing_covers_workflows_without_changing_review_profile():
     routing = json.loads((ASSETS / "config" / "default-model-routing.json").read_text(encoding="utf-8"))
     assert routing["stages"]["full-cycle"] == "reasoning"
     assert routing["stages"]["debt-list"] == "economical"
     assert routing["stages"]["debt-consult"] == "economical"
+    assert routing["stages"]["powerpack-update"] == "economical"
     assert routing["integrations"]["claude"]["economical"] == "haiku"
     assert routing["integrations"]["codex"]["economical"] == "luna"
     assert routing["reviewer_contract"]["codex"] == {
