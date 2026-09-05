@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "mode": "interactive",
+  "conversation_strategy": "one-per-pr",
+  "codex": {
+    "model": "gpt-5.6-sol",
+    "reasoning_effort": "xhigh",
+    "sandbox": "read-only"
+  },
+  "chatgpt_web": {
+    "enabled": false,
+    "mode": "assisted",
+    "project_alias": null,
+    "headless": false
+  },
+  "quality_gate": {
+    "mode": "auto-detect",
+    "skip_documentation_only": true
+  }
+}
