@@ -1,0 +1,27 @@
+schema_version: "1.0"
+
+extension:
+  id: "powerpack-tools"
+  name: "SpecKit PowerPack Tools"
+  version: "0.1.0"
+  description: "Portable PowerPack diagnostics and semantic model-routing helpers."
+  author: "David Oliveira"
+  repository: "https://github.com/ds1david/speckit-powerpack"
+  license: "MIT"
+
+requires:
+  speckit_version: ">=1.0.0"
+
+provides:
+  commands:
+    - name: "speckit.powerpack-tools.model-route"
+      file: "commands/model-route.md"
+      description: "Resolve the semantic model profile for a Spec Kit workflow stage."
+    - name: "speckit.powerpack-tools.doctor"
+      file: "commands/doctor.md"
+      description: "Diagnose the project-local PowerPack installation."
+
+tags:
+  - "workflow"
+  - "routing"
+  - "quality"
