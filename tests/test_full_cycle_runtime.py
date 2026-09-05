@@ -22,7 +22,13 @@ def setup_project(tmp_path: Path, *, max_convergence=2, max_review=2):
         "mode": "auto",
         "phases": {phase: True for phase in cycle.PHASE_ORDER},
         "limits": {"max_convergence_rounds": max_convergence, "max_review_rounds": max_review},
-        "behavior": {"same_spec_only": True, "stop_on_blocked": True, "allow_debt_escape_hatch": False},
+        "behavior": {
+            "same_spec_only": True,
+            "stop_on_blocked": True,
+            "allow_debt_escape_hatch": False,
+            "explicit_initial_implement_required": True,
+            "implement_review_owns_convergence": True,
+        },
     }), encoding="utf-8")
     return feature
 
@@ -40,37 +46,47 @@ def advance_to_implement(monkeypatch, tmp_path: Path):
     assert read_state(tmp_path)["current_phase"] == "implement"
 
 
-def test_full_cycle_returns_to_converge_after_fix_and_counts_attempts(monkeypatch, tmp_path: Path):
+def test_happy_path_requires_explicit_implement_before_implement_review(monkeypatch, tmp_path: Path):
     setup_project(tmp_path)
     advance_to_implement(monkeypatch, tmp_path)
-    cycle.main(["advance", "--phase", "implement", "--outcome", "completed"])
-    assert cycle.main(["advance", "--phase", "converge", "--outcome", "needs-implementation"]) == 0
-    state = read_state(tmp_path)
-    assert state["current_phase"] == "implement"
-    assert state["return_after_implement"] == "converge"
-    assert state["convergence_round"] == 1
 
-    cycle.main(["advance", "--phase", "implement", "--outcome", "completed"])
-    assert cycle.main(["advance", "--phase", "converge", "--outcome", "converged"]) == 0
+    assert cycle.main(["advance", "--phase", "implement", "--outcome", "completed"]) == 0
     state = read_state(tmp_path)
     assert state["current_phase"] == "implement_review"
-    assert state["convergence_round"] == 2
+    assert "converge" not in state["enabled_phases"]
+
+    assert cycle.main(["advance", "--phase", "implement_review", "--outcome", "approved"]) == 0
+    state = read_state(tmp_path)
+    assert state["status"] == "DONE"
+    assert state["current_phase"] == "DONE"
 
 
-def test_review_findings_return_to_implementation_then_review_and_count_final_approval(monkeypatch, tmp_path: Path):
+def test_full_cycle_rejects_intermediate_findings_handoff(monkeypatch, tmp_path: Path):
     setup_project(tmp_path)
     advance_to_implement(monkeypatch, tmp_path)
     cycle.main(["advance", "--phase", "implement", "--outcome", "completed"])
-    cycle.main(["advance", "--phase", "converge", "--outcome", "converged"])
 
-    assert cycle.main(["advance", "--phase", "implement_review", "--outcome", "findings"]) == 0
-    assert read_state(tmp_path)["review_round"] == 1
-    cycle.main(["advance", "--phase", "implement", "--outcome", "completed"])
-    assert read_state(tmp_path)["current_phase"] == "implement_review"
-    cycle.main(["advance", "--phase", "implement_review", "--outcome", "approved"])
+    assert cycle.main(["advance", "--phase", "implement_review", "--outcome", "findings"]) == 9
     state = read_state(tmp_path)
-    assert state["status"] == "DONE"
-    assert state["review_round"] == 2
+    assert state["status"] == "RUNNING"
+    assert state["current_phase"] == "implement_review"
+
+
+def test_review_budget_exhaustion_blocks_until_explicit_resume(monkeypatch, tmp_path: Path):
+    setup_project(tmp_path)
+    advance_to_implement(monkeypatch, tmp_path)
+    cycle.main(["advance", "--phase", "implement", "--outcome", "completed"])
+
+    assert cycle.main([
+        "advance", "--phase", "implement_review", "--outcome", "budget-exhausted",
+        "--evidence", "need two more review rounds",
+    ]) == 12
+    state = read_state(tmp_path)
+    assert state["status"] == "BLOCKED_BUDGET"
+    assert state["current_phase"] == "implement_review"
+
+    assert cycle.main(["resume", "--unblock"]) == 0
+    assert read_state(tmp_path)["status"] == "RUNNING"
 
 
 def test_skipped_checklist_also_skips_checklist_converge(monkeypatch, tmp_path: Path):
@@ -100,6 +116,16 @@ def test_non_weakenable_cycle_invariants_block_start(monkeypatch, tmp_path: Path
     cfg_path = tmp_path / ".specify" / "powerpack" / "full-cycle.json"
     cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
     cfg["behavior"]["allow_debt_escape_hatch"] = True
+    cfg_path.write_text(json.dumps(cfg), encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+    assert cycle.main(["start"]) == 8
+
+
+def test_implement_review_cannot_be_enabled_without_implement(monkeypatch, tmp_path: Path):
+    setup_project(tmp_path)
+    cfg_path = tmp_path / ".specify" / "powerpack" / "full-cycle.json"
+    cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+    cfg["phases"]["implement"] = False
     cfg_path.write_text(json.dumps(cfg), encoding="utf-8")
     monkeypatch.chdir(tmp_path)
     assert cycle.main(["start"]) == 8
