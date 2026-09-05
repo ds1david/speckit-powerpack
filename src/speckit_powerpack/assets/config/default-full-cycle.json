@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "mode": "interactive",
   "phases": {
     "clarify": true,
@@ -9,7 +9,6 @@
     "tasks": true,
     "analyze": true,
     "implement": true,
-    "converge": true,
     "implement_review": true
   },
   "limits": {
@@ -20,6 +19,8 @@
     "same_spec_only": true,
     "stop_on_blocked": true,
     "auto_select_review_findings_in_auto_mode": true,
-    "allow_debt_escape_hatch": false
+    "allow_debt_escape_hatch": false,
+    "explicit_initial_implement_required": true,
+    "implement_review_owns_convergence": true
   }
 }
