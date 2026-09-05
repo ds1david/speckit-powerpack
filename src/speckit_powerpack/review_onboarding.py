@@ -282,7 +282,7 @@ def discover_chatgpt_projects(*, profile_dir: Path) -> list[ProjectCandidate]:
                 page = context.pages[0] if context.pages else context.new_page()
                 page.goto("https://chatgpt.com/", wait_until="domcontentloaded")
                 print("ChatGPT opened in the selected PowerPack profile.")
-                print("Confirm the intended account is active and the Projects sidebar is visible, then press Enter here.")
+                print("Confirm the intended account is active, expand the Projects sidebar/list as needed, then press Enter here.")
                 input()
                 page.wait_for_timeout(750)
                 return _project_candidates_from_page(page)
@@ -290,6 +290,32 @@ def discover_chatgpt_projects(*, profile_dir: Path) -> list[ProjectCandidate]:
                 context.close()
     except PlaywrightError as exc:
         raise RuntimeError("Could not discover ChatGPT Projects from the selected Playwright profile") from exc
+
+
+def select_chatgpt_project_interactively(*, profile_dir: Path) -> ProjectCandidate:
+    """Fallback when sidebar discovery is incomplete: user navigates to any accessible Project."""
+    try:
+        from playwright.sync_api import Error as PlaywrightError
+        from playwright.sync_api import sync_playwright
+    except ImportError as exc:
+        raise RuntimeError("Playwright is not installed in the PowerPack environment") from exc
+    try:
+        with sync_playwright() as p:
+            context = p.chromium.launch_persistent_context(str(profile_dir), headless=False)
+            try:
+                page = context.pages[0] if context.pages else context.new_page()
+                page.goto("https://chatgpt.com/", wait_until="domcontentloaded")
+                print("Navigate in ChatGPT to the Project you want to bind, then press Enter here.")
+                input()
+                if not is_chatgpt_project_url(page.url):
+                    raise RuntimeError("The selected page is not a ChatGPT Project URL ending in /project")
+                title = (page.title() or "").strip()
+                normalized = page.url.split("?", 1)[0].split("#", 1)[0]
+                return ProjectCandidate(name=title or urlparse(normalized).path.split("/")[-2], url=normalized)
+            finally:
+                context.close()
+    except PlaywrightError as exc:
+        raise RuntimeError("ChatGPT Project selection browser flow was closed before a Project was selected") from exc
 
 
 def open_link_and_capture_project(*, profile_dir: Path, url: str, purpose: str) -> ProjectCandidate:
