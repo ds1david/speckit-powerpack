@@ -49,7 +49,6 @@ def effective_source(config: dict[str, Any] | None = None) -> dict[str, str | No
     if configured_ref:
         ref = str(configured_ref)
     elif installed_ref and not _SHA_RE.match(str(installed_ref)):
-        # A branch-installed development build follows that branch by default.
         ref = str(installed_ref)
     else:
         ref = DEFAULT_REF
@@ -67,11 +66,7 @@ def remote_sha(repository: str, ref: str) -> str:
         raise UpdateError("git is required to check PowerPack updates")
     refs = [f"refs/heads/{ref}", f"refs/tags/{ref}", ref]
     for candidate in refs:
-        proc = subprocess.run(
-            [git, "ls-remote", repository, candidate],
-            text=True,
-            capture_output=True,
-        )
+        proc = subprocess.run([git, "ls-remote", repository, candidate], text=True, capture_output=True)
         if proc.returncode != 0:
             detail = (proc.stderr or proc.stdout or "git ls-remote failed").strip()
             raise UpdateError(detail)
@@ -100,19 +95,17 @@ def check_update(config: dict[str, Any] | None = None) -> dict[str, Any]:
     }
 
 
+def git_source(repository: str, ref: str) -> str:
+    return f"git+{repository}@{ref}"
+
+
 def update_argv(repository: str, ref: str) -> list[str]:
     uv = shutil.which("uv")
     if not uv:
         raise UpdateError("uv is required to update the installed PowerPack CLI")
-    return [
-        uv,
-        "tool",
-        "install",
-        "--force",
-        "speckit-powerpack",
-        "--from",
-        f"git+{repository}@{ref}",
-    ]
+    # `uv tool install` accepts a Git source directly as PACKAGE. `--from` is
+    # a tool-run/uvx concept and must not be used here.
+    return [uv, "tool", "install", "--force", git_source(repository, ref)]
 
 
 def apply_self_update(repository: str, ref: str) -> dict[str, Any]:
