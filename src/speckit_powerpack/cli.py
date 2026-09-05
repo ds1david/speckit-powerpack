@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import platform as platform_module
+import re
 import shutil
 import subprocess
 import sys
@@ -17,7 +18,10 @@ from .update_manager import UpdateError, apply_self_update, check_update
 
 SPECKIT_REPO = "https://github.com/github/spec-kit.git"
 SPECKIT_TESTED_TAG = "v1.0.4"
+SPECKIT_MIN_VERSION = (1, 0, 0)
+SPECKIT_MIN_VERSION_TEXT = "1.0.0"
 DEFAULT_INTEGRATION = "claude"
+_VERSION_RE = re.compile(r"(?<!\d)(\d+)\.(\d+)\.(\d+)")
 
 
 class PowerPackError(RuntimeError):
@@ -59,21 +63,76 @@ def default_config_base(*, system: str | None = None, env: dict[str, str] | None
     return user_home / ".config"
 
 
-def ensure_specify(install: bool) -> str:
-    binary = shutil.which("specify")
-    if binary:
-        return binary
-    if not install:
-        raise PowerPackError("Official Spec Kit CLI ('specify') is not installed.")
+def parse_version(value: str) -> tuple[int, int, int] | None:
+    match = _VERSION_RE.search(value or "")
+    if not match:
+        return None
+    return tuple(int(part) for part in match.groups())
+
+
+def specify_version(binary: str) -> str | None:
+    machine = run([binary, "version", "--features", "--json"], check=False)
+    if machine.returncode == 0:
+        try:
+            payload = json.loads(machine.stdout)
+        except json.JSONDecodeError:
+            payload = None
+        if isinstance(payload, dict) and payload.get("version"):
+            return str(payload["version"])
+
+    human = run([binary, "version"], check=False)
+    text = f"{human.stdout}\n{human.stderr}"
+    match = _VERSION_RE.search(text)
+    return match.group(0) if match else None
+
+
+def spec_kit_compatible(version: str | None) -> bool:
+    parsed = parse_version(version or "")
+    return parsed is not None and parsed >= SPECKIT_MIN_VERSION
+
+
+def install_tested_spec_kit() -> str:
     uv = shutil.which("uv")
     if not uv:
-        raise PowerPackError("uv is required to bootstrap official Spec Kit.")
-    # uv tool install accepts a Git source directly as PACKAGE.
-    run([uv, "tool", "install", f"git+{SPECKIT_REPO}@{SPECKIT_TESTED_TAG}"])
+        raise PowerPackError("uv is required to install/upgrade official Spec Kit.")
+    run([uv, "tool", "install", "--force", f"git+{SPECKIT_REPO}@{SPECKIT_TESTED_TAG}"])
     binary = shutil.which("specify")
     if not binary:
         raise PowerPackError("Spec Kit was installed but 'specify' is not visible on PATH yet.")
+    version = specify_version(binary)
+    if not spec_kit_compatible(version):
+        raise PowerPackError(
+            f"Installed Spec Kit version '{version or 'unknown'}' is still incompatible; "
+            f"PowerPack requires >= {SPECKIT_MIN_VERSION_TEXT}."
+        )
     return binary
+
+
+def ensure_specify(install: bool) -> str:
+    binary = shutil.which("specify")
+    if not binary:
+        if not install:
+            raise PowerPackError(
+                "Official Spec Kit CLI ('specify') is not installed. "
+                "Re-run with --bootstrap-speckit."
+            )
+        return install_tested_spec_kit()
+
+    version = specify_version(binary)
+    if spec_kit_compatible(version):
+        return binary
+
+    if install:
+        print(
+            f"Spec Kit {version or 'unknown'} is incompatible; upgrading to tested {SPECKIT_TESTED_TAG}...",
+            file=sys.stderr,
+        )
+        return install_tested_spec_kit()
+
+    raise PowerPackError(
+        f"Spec Kit {version or 'unknown'} is incompatible; PowerPack requires >= {SPECKIT_MIN_VERSION_TEXT}. "
+        "Re-run with --bootstrap-speckit to upgrade automatically."
+    )
 
 
 def write_json(path: Path, data: Any, *, overwrite: bool = False, mode: int | None = None) -> None:
@@ -91,6 +150,29 @@ def read_asset_json(relative: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise PowerPackError(f"Packaged config {relative} must contain an object.")
     return value
+
+
+def enforce_mandatory_web_review(review_path: Path) -> None:
+    if review_path.is_file():
+        try:
+            review = json.loads(review_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise PowerPackError(f"Cannot read PowerPack review config: {exc}") from exc
+    else:
+        review = read_asset_json("config/default-review.json")
+    if not isinstance(review, dict):
+        raise PowerPackError("PowerPack review config must contain an object.")
+    web = review.setdefault("chatgpt_web", {})
+    web["required"] = True
+    web["enabled"] = True
+    web.setdefault("mode", "assisted")
+    web.setdefault("headless", False)
+    web.setdefault("project_alias", None)
+    web.setdefault("project_url", None)
+    web.setdefault("profile", None)
+    web.setdefault("profile_scope", "platform")
+    web.setdefault("profile_platform", None)
+    write_json(review_path, review, overwrite=True)
 
 
 def install_support(project: Path, integration: str, *, overwrite_config: bool = False) -> None:
@@ -120,7 +202,9 @@ def install_support(project: Path, integration: str, *, overwrite_config: bool =
     routing = read_asset_json("config/default-model-routing.json")
     routing["active_integration"] = integration
     write_json(base / "model-routing.json", routing, overwrite=overwrite_config)
-    write_json(base / "review.json", read_asset_json("config/default-review.json"), overwrite=overwrite_config)
+    review_path = base / "review.json"
+    write_json(review_path, read_asset_json("config/default-review.json"), overwrite=overwrite_config)
+    enforce_mandatory_web_review(review_path)
     write_json(base / "technical-debt.json", read_asset_json("config/default-technical-debt.json"), overwrite=overwrite_config)
     write_json(base / "full-cycle.json", read_asset_json("config/default-full-cycle.json"), overwrite=overwrite_config)
     write_json(base / "update.json", read_asset_json("config/default-update.json"), overwrite=overwrite_config)
@@ -152,6 +236,42 @@ def install_components(project: Path, specify: str) -> None:
         run([specify, "preset", "add", "--dev", str(preset), "--priority", "5"], cwd=project)
 
 
+def playwright_package_ready() -> bool:
+    try:
+        import playwright  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+def ensure_playwright() -> None:
+    if playwright_package_ready():
+        return
+    run([sys.executable, "-m", "pip", "install", "playwright>=1.55,<2"])
+
+
+def playwright_browser_ready() -> bool:
+    if not playwright_package_ready():
+        return False
+    try:
+        from playwright.sync_api import sync_playwright
+        with sync_playwright() as p:
+            return Path(p.chromium.executable_path).is_file()
+    except Exception:
+        return False
+
+
+def ensure_playwright_browser() -> None:
+    ensure_playwright()
+    if not playwright_browser_ready():
+        run([sys.executable, "-m", "playwright", "install", "chromium"])
+    if not playwright_browser_ready():
+        raise PowerPackError(
+            "Playwright is installed but Chromium is not ready. "
+            "Run 'speckit-powerpack review setup --install-browser' and inspect the browser installation error."
+        )
+
+
 def install_powerpack(path: str, integration: str, *, initialize: bool, bootstrap: bool, overwrite_config: bool = False) -> None:
     project = Path(path).expanduser().resolve()
     project.mkdir(parents=True, exist_ok=True)
@@ -162,6 +282,7 @@ def install_powerpack(path: str, integration: str, *, initialize: bool, bootstra
         raise PowerPackError("Target is not an initialized Spec Kit project.")
     install_support(project, integration, overwrite_config=overwrite_config)
     install_components(project, specify)
+    ensure_playwright_browser()
 
 
 def global_root() -> Path:
@@ -220,15 +341,8 @@ def profile_dir(name: str, *, system: str | None = None, create: bool = True) ->
     return path
 
 
-def ensure_playwright() -> None:
-    try:
-        import playwright  # noqa: F401
-    except ImportError:
-        run([sys.executable, "-m", "pip", "install", "playwright>=1.55,<2"])
-
-
 def browser_action(profile: str, url: str, purpose: str) -> None:
-    ensure_playwright()
+    ensure_playwright_browser()
     from playwright.sync_api import sync_playwright
     current = platform_key()
     with sync_playwright() as p:
@@ -266,6 +380,64 @@ def project_integration(path: str | Path, fallback: str = DEFAULT_INTEGRATION) -
         if value in {"claude", "codex"}:
             return value
     return fallback
+
+
+def review_readiness(project: Path) -> dict[str, bool]:
+    review_path = project / ".specify" / "powerpack" / "review.json"
+    if not review_path.is_file():
+        return {
+            "web-review-required": False,
+            "playwright-package": playwright_package_ready(),
+            "playwright-browser": playwright_browser_ready(),
+            "chatgpt-authenticated": False,
+            "chatgpt-project-bound": False,
+        }
+    try:
+        review = json.loads(review_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        review = {}
+    web = review.get("chatgpt_web", {}) if isinstance(review, dict) else {}
+    current = platform_key()
+    profile = web.get("profile") if isinstance(web, dict) else None
+    alias = web.get("project_alias") if isinstance(web, dict) else None
+    url = web.get("project_url") if isinstance(web, dict) else None
+
+    _, global_data = global_config()
+    authenticated = global_data.get("authenticated_profiles", {}).get(current, {})
+    auth_ok = bool(profile and authenticated.get(profile) and profile_dir(profile, create=False).is_dir())
+
+    registered = global_data.get("projects", {}).get(alias) if alias else None
+    binding = registered.get("bindings", {}).get(current) if isinstance(registered, dict) else None
+    project_ok = bool(
+        alias
+        and profile
+        and url
+        and isinstance(binding, dict)
+        and binding.get("profile") == profile
+        and binding.get("url") == url
+    )
+    return {
+        "web-review-required": bool(web.get("required") and web.get("enabled")) if isinstance(web, dict) else False,
+        "playwright-package": playwright_package_ready(),
+        "playwright-browser": playwright_browser_ready(),
+        "chatgpt-authenticated": auth_ok,
+        "chatgpt-project-bound": project_ok,
+    }
+
+
+def print_review_setup_status(project: Path) -> None:
+    readiness = review_readiness(project)
+    if all(readiness.values()):
+        print("Mandatory ChatGPT Project Web review is configured and ready.")
+        return
+    print("\nMANDATORY REVIEW SETUP REQUIRED")
+    print("The PowerPack files are installed, but deep review is not ready until ChatGPT authentication and Project binding are configured.")
+    print("Complete these steps in this same OS/WSL environment:")
+    print("  speckit-powerpack review auth login <profile>")
+    print("  speckit-powerpack review project bind <alias> https://chatgpt.com/g/g-p-.../project --profile <profile>")
+    print("  speckit-powerpack review project use <alias> --path .")
+    print("  speckit-powerpack doctor")
+    print("Credentials and MFA are entered only in the visible Playwright browser; never in the CLI.\n")
 
 
 def confirm_update(prompt: str, *, assume_yes: bool = False) -> bool:
@@ -319,14 +491,18 @@ def maybe_auto_update(command: str, args: argparse.Namespace) -> None:
 
 def cmd_init(args: argparse.Namespace) -> None:
     maybe_auto_update("init", args)
+    project = Path(args.path).expanduser().resolve()
     install_powerpack(args.path, args.integration, initialize=True, bootstrap=True)
     print(f"SpecKit PowerPack draft {__version__} installed.")
+    print_review_setup_status(project)
 
 
 def cmd_install(args: argparse.Namespace) -> None:
     maybe_auto_update("install", args)
+    project = Path(args.path).expanduser().resolve()
     install_powerpack(args.path, args.integration, initialize=False, bootstrap=args.bootstrap_speckit)
     print(f"SpecKit PowerPack draft {__version__} installed.")
+    print_review_setup_status(project)
 
 
 def cmd_update(args: argparse.Namespace) -> None:
@@ -361,6 +537,7 @@ def cmd_update(args: argparse.Namespace) -> None:
     integration = args.integration or project_integration(project)
     if args.project_only:
         install_powerpack(str(project), integration, initialize=False, bootstrap=args.bootstrap_speckit, overwrite_config=args.reset_config)
+        print_review_setup_status(project)
         print(json.dumps({"status": "PROJECT_REFRESHED", "path": str(project), "force": args.force, "config_reset": args.reset_config}))
         return
 
@@ -400,8 +577,13 @@ def cmd_doctor(args: argparse.Namespace) -> None:
     review_protocol = runtime.with_name("review_protocol.py")
     debt_runtime = runtime.with_name("debt.py")
     cycle_runtime = runtime.with_name("full_cycle.py")
+    specify_binary = shutil.which("specify")
+    current_spec_kit = specify_version(specify_binary) if specify_binary else None
+    integration = project_integration(project)
+    readiness = review_readiness(project)
     checks = {
-        "specify": bool(shutil.which("specify")),
+        "specify": bool(specify_binary),
+        "spec-kit-compatible": spec_kit_compatible(current_spec_kit),
         "spec-kit-project": (project / ".specify").is_dir(),
         "powerpack-runtime": runtime.is_file(),
         "capability-resolver": capabilities.is_file(),
@@ -410,35 +592,46 @@ def cmd_doctor(args: argparse.Namespace) -> None:
         "full-cycle-runtime": cycle_runtime.is_file(),
         "claude": bool(shutil.which("claude")),
         "codex": bool(shutil.which("codex")),
+        "selected-executor": bool(shutil.which(integration)),
+        **readiness,
     }
-    print(f"Platform: {platform_key()} ({platform_module.system()})")
-    print(f"Config:   {global_root()}")
+    print(f"Platform:   {platform_key()} ({platform_module.system()})")
+    print(f"Config:     {global_root()}")
+    print(f"Integration:{integration}")
+    print(f"Spec Kit:   {current_spec_kit or 'unknown'} (requires >= {SPECKIT_MIN_VERSION_TEXT})")
     for key, ok in checks.items():
         print(f"{'OK' if ok else 'FAIL':4} {key}")
     required = (
-        "specify", "spec-kit-project", "powerpack-runtime", "capability-resolver",
-        "review-protocol-validator", "technical-debt-runtime", "full-cycle-runtime",
+        "specify", "spec-kit-compatible", "spec-kit-project", "powerpack-runtime", "capability-resolver",
+        "review-protocol-validator", "technical-debt-runtime", "full-cycle-runtime", "selected-executor",
+        "web-review-required", "playwright-package", "playwright-browser", "chatgpt-authenticated", "chatgpt-project-bound",
     )
     if not all(checks[name] for name in required):
-        raise PowerPackError("Required installation checks failed.")
+        print_review_setup_status(project)
+        raise PowerPackError("Required PowerPack installation/review-readiness checks failed.")
 
 
 def cmd_review_setup(args: argparse.Namespace) -> None:
-    ensure_playwright()
-    if args.install_browser:
-        run([sys.executable, "-m", "playwright", "install", "chromium"])
-    print("Playwright review dependencies are ready.")
+    ensure_playwright_browser()
+    print("Playwright and Chromium review dependencies are ready.")
 
 
 def cmd_auth_login(args: argparse.Namespace) -> None:
     browser_action(args.profile, "https://chatgpt.com/", "ChatGPT login")
+    current = platform_key()
     path, data = global_config()
-    data.setdefault("active_profiles", {})[platform_key()] = args.profile
+    data.setdefault("active_profiles", {})[current] = args.profile
+    data.setdefault("authenticated_profiles", {}).setdefault(current, {})[args.profile] = {"confirmed": True}
     save_global(path, data)
+    print(f"Recorded completed ChatGPT browser login for profile '{args.profile}' on {current}.")
 
 
 def cmd_auth_logout(args: argparse.Namespace) -> None:
     browser_action(args.profile, "https://chatgpt.com/", "ChatGPT logout")
+    current = platform_key()
+    path, data = global_config()
+    data.setdefault("authenticated_profiles", {}).setdefault(current, {}).pop(args.profile, None)
+    save_global(path, data)
 
 
 def cmd_auth_forget(args: argparse.Namespace) -> None:
@@ -449,6 +642,7 @@ def cmd_auth_forget(args: argparse.Namespace) -> None:
     cfg_path, data = global_config()
     if data.setdefault("active_profiles", {}).get(current) == args.profile:
         data["active_profiles"].pop(current, None)
+    data.setdefault("authenticated_profiles", {}).setdefault(current, {}).pop(args.profile, None)
     save_global(cfg_path, data)
 
 
@@ -458,6 +652,12 @@ def cmd_project_bind(args: argparse.Namespace) -> None:
     profile = args.profile or data.setdefault("active_profiles", {}).get(current)
     if not profile:
         raise PowerPackError(f"Login/select a browser profile for platform '{current}' first.")
+    authenticated = data.setdefault("authenticated_profiles", {}).setdefault(current, {})
+    if not authenticated.get(profile):
+        raise PowerPackError(
+            f"Profile '{profile}' has no completed ChatGPT login on platform '{current}'. "
+            f"Run 'speckit-powerpack review auth login {profile}' first."
+        )
     project = data.setdefault("projects", {}).setdefault(args.alias, {"bindings": {}})
     bindings = project.setdefault("bindings", {})
     bindings[current] = {"url": validate_project_url(args.url), "profile": profile}
@@ -488,9 +688,15 @@ def cmd_project_use(args: argparse.Namespace) -> None:
     binding = registered.get("bindings", {}).get(current)
     if not binding:
         raise PowerPackError(f"Project alias '{args.alias}' has no ChatGPT binding for platform '{current}'. Bind it on this platform first.")
+    authenticated = global_data.get("authenticated_profiles", {}).get(current, {})
+    if not authenticated.get(binding.get("profile")):
+        raise PowerPackError("The selected project's browser profile is not recorded as authenticated on this platform.")
     review_path = project / ".specify" / "powerpack" / "review.json"
+    if not review_path.is_file():
+        raise PowerPackError("PowerPack review config is missing; install/refresh the PowerPack in this project first.")
     review = json.loads(review_path.read_text(encoding="utf-8"))
     web = review.setdefault("chatgpt_web", {})
+    web["required"] = True
     web["enabled"] = True
     web["project_alias"] = args.alias
     web["project_url"] = binding["url"]
@@ -498,6 +704,7 @@ def cmd_project_use(args: argparse.Namespace) -> None:
     web["profile_scope"] = "platform"
     web["profile_platform"] = current
     write_json(review_path, review, overwrite=True)
+    print(f"Project '{args.alias}' is now the mandatory ChatGPT Web review target for {project}.")
 
 
 def add_install_update_flags(parser: argparse.ArgumentParser) -> None:
