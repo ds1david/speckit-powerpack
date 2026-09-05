@@ -37,6 +37,13 @@ def test_review_defaults_require_platform_scoped_web_profiles():
     assert review["chatgpt_web"]["profile_scope"] == "platform"
     assert review["deep_review"]["schema_version"] == "2.0"
     assert review["deep_review"]["validate_previous_findings"] is True
+    assert review["deep_review"]["full_snapshot_each_round"] is True
+    assert review["deep_review"]["adversarial_verdict_challenge"] is True
+
+
+def test_deep_review_protocol_and_validator_are_packaged():
+    assert (ASSETS / "review" / "deep-review-protocol.md").is_file()
+    assert (ASSETS / "runtime" / "powerpack_review_protocol.py").is_file()
 
 
 def test_technical_debt_policy_forbids_review_escape_hatch():
@@ -45,3 +52,13 @@ def test_technical_debt_policy_forbids_review_escape_hatch():
     assert policy["forbid_active_review_findings"] is True
     assert policy["forbid_active_convergence_gaps"] is True
     assert policy["forbid_blockers"] is True
+    assert policy["powerpack_policy_is_minimum_floor"] is True
+    assert (ASSETS / "policies" / "technical-debt.md").is_file()
+
+
+def test_full_cycle_defaults_preserve_safety_invariants():
+    config = json.loads((ASSETS / "config" / "default-full-cycle.json").read_text(encoding="utf-8"))
+    assert config["behavior"]["same_spec_only"] is True
+    assert config["behavior"]["stop_on_blocked"] is True
+    assert config["behavior"]["allow_debt_escape_hatch"] is False
+    assert config["phases"]["implement_review"] is True
