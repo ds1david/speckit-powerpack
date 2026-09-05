@@ -51,6 +51,7 @@ def test_review_defaults_require_platform_scoped_web_profiles():
     assert review["chatgpt_web"]["enabled"] is True
     assert review["chatgpt_web"]["profile_scope"] == "platform"
     assert review["chatgpt_web"]["headless"] is False
+    assert review["chatgpt_web"]["authorization"] is None
     assert review["deep_review"]["schema_version"] == "2.0"
     assert review["deep_review"]["validate_previous_findings"] is True
     assert review["deep_review"]["full_snapshot_each_round"] is True
@@ -60,6 +61,7 @@ def test_review_defaults_require_platform_scoped_web_profiles():
 def test_playwright_is_a_core_runtime_dependency():
     pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
     assert 'dependencies = ["playwright>=1.55,<2"]' in pyproject
+    assert 'speckit-powerpack = "speckit_powerpack.cli:main"' in pyproject
 
 
 def test_deep_review_protocol_and_validator_are_packaged():
@@ -97,12 +99,21 @@ def test_implement_review_contract_starts_from_explicit_implement_then_converges
     text = (PRESET / "commands" / "speckit.implement-review.md").read_text(encoding="utf-8")
     assert "speckit-implement\n  -> speckit-implement-review" in text
     assert "MUST NOT perform the initial implementation" in text
-    assert "The first productive action after the predecessor gate is `speckit-converge`" in text
-    assert "implement fixes\n  -> converge" in text
+    assert "first productive action after readiness and predecessor gates is `speckit-converge`" in text
     assert "BLOCKED_BUDGET" in text
     assert "gpt-5.6-terra/high" in text
     assert "gpt-5.6-sol/xhigh/read-only" in text
     assert "NEVER launch another `codex` CLI recursively" in text
+
+
+def test_implement_review_requires_playwright_consent_and_dual_approval():
+    text = (PRESET / "commands" / "speckit.implement-review.md").read_text(encoding="utf-8")
+    assert "speckit-powerpack doctor" in text
+    assert "playwright-consent" in text
+    assert "mandatory ChatGPT Project Web review" in text
+    assert "Both final approvals must refer to the same final snapshot" in text
+    assert "Missing Web authorization/project binding is `BLOCKED_CONFIGURATION`" in text
+    assert "Codex-only completion" in text
 
 
 def test_model_routing_covers_workflows_without_changing_review_profile():
