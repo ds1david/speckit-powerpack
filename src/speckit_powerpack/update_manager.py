@@ -64,7 +64,9 @@ def remote_sha(repository: str, ref: str) -> str:
     git = shutil.which("git")
     if not git:
         raise UpdateError("git is required to check PowerPack updates")
-    refs = [f"refs/heads/{ref}", f"refs/tags/{ref}", ref]
+    # Prefer a branch, then the peeled commit of an annotated tag, then the
+    # tag object/lightweight tag, then the raw ref supplied by the operator.
+    refs = [f"refs/heads/{ref}", f"refs/tags/{ref}^{{}}", f"refs/tags/{ref}", ref]
     for candidate in refs:
         proc = subprocess.run([git, "ls-remote", repository, candidate], text=True, capture_output=True)
         if proc.returncode != 0:
@@ -103,8 +105,6 @@ def update_argv(repository: str, ref: str) -> list[str]:
     uv = shutil.which("uv")
     if not uv:
         raise UpdateError("uv is required to update the installed PowerPack CLI")
-    # `uv tool install` accepts a Git source directly as PACKAGE. `--from` is
-    # a tool-run/uvx concept and must not be used here.
     return [uv, "tool", "install", "--force", git_source(repository, ref)]
 
 
