@@ -1,18 +1,31 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "active_integration": "claude",
   "stages": {
     "implement": "coding",
-    "converge": "reasoning",
+    "converge": "semantic_gate",
     "checklist-converge": "reasoning",
-    "implement-review": "reviewer",
-    "full-cycle": "reasoning",
+    "implement-review": "orchestration",
+    "full-cycle": "orchestration",
     "debt-create": "reasoning",
     "debt-list": "economical",
     "debt-consult": "economical",
     "debt-start": "reasoning",
     "debt-close": "reasoning",
     "powerpack-update": "economical"
+  },
+  "stage_reasons": {
+    "implement": "Parent implementation/write ownership belongs to the baseline engineering model.",
+    "converge": "Convergence is a semantic correctness gate and may require deeper reasoning.",
+    "checklist-converge": "Requirements-quality repair is semantic work owned by the parent model.",
+    "implement-review": "The parent orchestrates convergence, fixes and reviewer handoffs; the deep reviewer remains a separate Sol/xhigh role.",
+    "full-cycle": "The full cycle is orchestration over multiple SpecKit stages and should stay on the baseline parent model.",
+    "debt-create": "Debt creation changes authoritative backlog state and requires semantic judgment.",
+    "debt-list": "Read-only inventory/filtering is bounded mechanical work.",
+    "debt-consult": "Read-only exact-ID/provenance lookup is bounded mechanical work.",
+    "debt-start": "Starting debt work changes lifecycle state and requires readiness judgment.",
+    "debt-close": "Closure changes lifecycle state and requires evidence-backed semantic judgment.",
+    "powerpack-update": "Update discovery is bounded operational work."
   },
   "reviewer_contract": {
     "codex": {
@@ -21,18 +34,44 @@
       "sandbox": "read-only"
     }
   },
+  "effort": {
+    "claude": {
+      "economical": "medium",
+      "coding": "default",
+      "reasoning": "default",
+      "semantic_gate": "default",
+      "orchestration": "default",
+      "advisor": "default",
+      "reviewer": "xhigh"
+    },
+    "codex": {
+      "economical": "medium",
+      "coding": "high",
+      "reasoning": "high",
+      "semantic_gate": "high",
+      "orchestration": "high",
+      "advisor": "high",
+      "reviewer": "xhigh"
+    }
+  },
   "integrations": {
     "claude": {
       "economical": "haiku",
       "coding": "sonnet",
-      "reasoning": "opus",
-      "reviewer": "external-codex"
+      "reasoning": "sonnet",
+      "semantic_gate": "sonnet",
+      "orchestration": "sonnet",
+      "advisor": "opus",
+      "reviewer": "external-codex:gpt-5.6-sol"
     },
     "codex": {
-      "economical": "luna",
-      "coding": "sol",
-      "reasoning": "tera",
-      "reviewer": "local-session"
+      "economical": "gpt-5.6-luna",
+      "coding": "gpt-5.6-terra",
+      "reasoning": "gpt-5.6-terra",
+      "semantic_gate": "gpt-5.6-sol",
+      "orchestration": "gpt-5.6-terra",
+      "advisor": "gpt-5.6-sol",
+      "reviewer": "gpt-5.6-sol"
     }
   }
 }
