@@ -23,7 +23,10 @@ def test_install_support_materializes_customizable_project_contract(tmp_path: Pa
     assert (base / "technical-debt-template.md").is_file()
 
     review = json.loads((base / "review.json").read_text(encoding="utf-8"))
+    assert review["chatgpt_web"]["required"] is True
+    assert review["chatgpt_web"]["enabled"] is True
     assert review["chatgpt_web"]["profile_scope"] == "platform"
+    assert review["chatgpt_web"]["authorization"] is None
 
     debt = json.loads((base / "technical-debt.json").read_text(encoding="utf-8"))
     assert debt["template_path"] == ".specify/powerpack/technical-debt-template.md"
@@ -70,7 +73,12 @@ def test_install_support_preserves_project_config_until_explicit_reset(tmp_path:
     review_path.write_text(json.dumps(review), encoding="utf-8")
 
     cli.install_support(tmp_path, "codex")
-    assert json.loads(review_path.read_text(encoding="utf-8"))["custom_marker"] == "keep-me"
+    preserved = json.loads(review_path.read_text(encoding="utf-8"))
+    assert preserved["custom_marker"] == "keep-me"
+    assert preserved["chatgpt_web"]["required"] is True
+    assert preserved["chatgpt_web"]["enabled"] is True
 
     cli.install_support(tmp_path, "codex", overwrite_config=True)
-    assert "custom_marker" not in json.loads(review_path.read_text(encoding="utf-8"))
+    reset = json.loads(review_path.read_text(encoding="utf-8"))
+    assert "custom_marker" not in reset
+    assert reset["chatgpt_web"]["authorization"] is None
