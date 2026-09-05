@@ -7,9 +7,12 @@ on:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    name: ${{ matrix.os }} / Python ${{ matrix.python-version }}
+    runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
         python-version: ["3.11", "3.13"]
     steps:
       - uses: actions/checkout@v4
@@ -23,12 +26,5 @@ jobs:
       - name: Build wheel
         run: python -m build --wheel
       - name: Reject bytecode in wheel
-        run: |
-          python - <<'PY'
-          from pathlib import Path
-          import zipfile
-          wheel = next(Path('dist').glob('*.whl'))
-          with zipfile.ZipFile(wheel) as zf:
-              bad = [n for n in zf.namelist() if '__pycache__' in n or n.endswith('.pyc')]
-              assert not bad, bad
-          PY
+        run: >-
+          python -c "from pathlib import Path; import zipfile; wheel=next(Path('dist').glob('*.whl')); zf=zipfile.ZipFile(wheel); bad=[n for n in zf.namelist() if '__pycache__' in n or n.endswith('.pyc')]; assert not bad, bad"
