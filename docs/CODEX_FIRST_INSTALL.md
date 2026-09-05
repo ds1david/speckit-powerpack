@@ -6,8 +6,6 @@ The operation is intentionally non-destructive to application code and SpecKit f
 
 ## Target workflow
 
-The PowerPack happy path is:
-
 ```text
 speckit-specify
   -> speckit-clarify
@@ -20,9 +18,11 @@ speckit-specify
   -> speckit-implement-review
        -> speckit-converge
             -> tasks appended? speckit-implement -> speckit-converge ...
-       -> independent review
-            -> findings? implement fixes -> speckit-converge -> review ...
-            -> approved? COMPLETE
+       -> Sol/xhigh independent review
+            -> findings? implement fixes -> speckit-converge -> Sol review ...
+       -> mandatory ChatGPT Project Web review
+            -> findings? implement fixes -> speckit-converge -> Sol review -> Web review ...
+            -> both gates approve same final snapshot? COMPLETE
             -> budget exhausted? BLOCKED_BUDGET -> explicit extend
 ```
 
@@ -39,12 +39,7 @@ When installed with `--integration codex`, `.specify/powerpack/model-routing.jso
 | Semantic gate/advisor | `gpt-5.6-sol` | high | read-only semantic analysis/escalation |
 | Independent deep reviewer | `gpt-5.6-sol` | xhigh | read-only review |
 
-The Terra parent never starts a recursive `codex` CLI only to obtain an independent review. Review uses either:
-
-1. the current context when it is already provably `gpt-5.6-sol/xhigh/read-only`; or
-2. exactly one **in-session Sol reviewer/subagent** configured as `gpt-5.6-sol/xhigh/read-only`.
-
-If neither route can be proven, implementation review returns `BLOCKED` instead of silently reviewing with Terra/Luna or a weaker effort.
+The Terra parent never starts a recursive `codex` CLI only to obtain an independent review. Review uses either a context already proven as `gpt-5.6-sol/xhigh/read-only` or exactly one in-session Sol reviewer/subagent with that contract.
 
 ## 1. Pre-install checkpoint
 
@@ -56,9 +51,7 @@ git branch --show-current
 git rev-parse --short HEAD
 ```
 
-PowerPack does not require a clean tree merely to install, but an intentional checkpoint makes it easy to distinguish your current project customizations from generated skill changes.
-
-If you want a Git checkpoint, commit the project state using your normal workflow before installation. Do not use destructive reset/rebase just for PowerPack installation.
+PowerPack does not require a clean tree merely to install, but a checkpoint makes it easy to distinguish current project customizations from generated skill changes.
 
 ## 2. Prerequisites in WSL/Linux
 
@@ -68,7 +61,7 @@ Verify:
 python3 --version
 git --version
 uv --version
-specify --version
+specify version
 codex --version
 ```
 
@@ -77,14 +70,13 @@ Requirements:
 - Python 3.11+;
 - Git;
 - `uv` for Git-based CLI installation/update and Spec Kit bootstrap;
-- official `specify` CLI, unless `--bootstrap-speckit` is used;
-- Codex CLI authenticated in the environment where the project will be executed.
+- official Spec Kit `>=1.0.0`;
+- Codex CLI authenticated in the environment where the project will be executed;
+- a graphical environment capable of opening Playwright Chromium for the mandatory ChatGPT Web authorization/review gate.
 
 Claude Code is **not required** for a Codex-first PowerPack run.
 
 ## 3. Install/update the PowerPack CLI
-
-Install current `main`:
 
 ```bash
 uv tool install --force \
@@ -99,13 +91,7 @@ speckit-powerpack --version
 
 ## 4. Install into an existing Spec Kit project
 
-From the existing project root:
-
-```bash
-speckit-powerpack install . --integration codex
-```
-
-If `specify` is not installed yet:
+Recommended command:
 
 ```bash
 speckit-powerpack install . \
@@ -113,59 +99,60 @@ speckit-powerpack install . \
   --bootstrap-speckit
 ```
 
+`--bootstrap-speckit` handles both missing and incompatible Spec Kit installations. For example, an installed `0.14.x` CLI is upgraded to the PowerPack-tested release before preset/extension installation.
+
 The installer:
 
 1. preserves the existing `.specify` project;
 2. installs/refreshes the `powerpack-tools` Spec Kit extension;
 3. removes and rematerializes the `powerpack-core` preset;
 4. wraps official `speckit-implement` and `speckit-converge` rather than freezing old upstream command bodies;
-5. replaces the PowerPack-owned commands such as `speckit-checklist-converge`, `speckit-implement-review`, `speckit-full-cycle` and debt lifecycle skills;
+5. replaces PowerPack-owned commands such as `speckit-checklist-converge`, `speckit-implement-review`, `speckit-full-cycle` and debt lifecycle skills;
 6. materializes the project-local PowerPack runtime under `.specify/powerpack/`;
-7. selects Codex in a newly created `.specify/powerpack/model-routing.json`.
+7. selects Codex in `.specify/powerpack/model-routing.json` when creating that config;
+8. prepares Playwright Chromium for the Web review gate;
+9. leaves Web authorization intentionally ungranted until the user explicitly consents.
 
 PowerPack does **not** intentionally delete unrelated project-owned custom skills.
 
-## 5. Existing PowerPack installation: verify active integration
+## 5. Authorize ChatGPT Web in an isolated PowerPack browser profile
 
-If the project already had PowerPack installed previously with Claude as the active integration, inspect:
+PowerPack does **not** attach to the normal Edge/Chrome profile. The browser session is stored under a PowerPack-owned platform namespace outside the repository, for example:
+
+```text
+~/.config/speckit-powerpack/browser-profiles/linux/atsel/
+```
+
+Run one authorization command:
 
 ```bash
-python3 - <<'PY'
-import json
-from pathlib import Path
-p = Path('.specify/powerpack/model-routing.json')
-print(json.dumps(json.loads(p.read_text()), indent=2))
-PY
+speckit-powerpack review authorize \
+  --profile atsel \
+  --project atsel \
+  --url 'https://chatgpt.com/g/g-p-.../project' \
+  --path .
 ```
 
-The expected value for a Codex-first project is:
+The Playwright flow is deliberately explicit:
 
-```json
-"active_integration": "codex"
-```
+1. PowerPack opens an isolated Chromium profile;
+2. the first tab explains the requested scope, profile storage path and exact ChatGPT Project URL;
+3. choose **Autorizar e abrir ChatGPT**;
+4. a second tab opens the selected Project;
+5. sign in on `chatgpt.com` if necessary; credentials/MFA never pass through the PowerPack CLI;
+6. confirm the intended Project is visible;
+7. return to the consent tab and choose **Conceder acesso ao projeto**;
+8. only then does PowerPack persist the platform/profile/Project grant.
 
-A first installation with `--integration codex` creates it correctly. When migrating an older customized PowerPack config, preserve project overrides and explicitly set only `active_integration` to `codex` if necessary rather than deleting the entire file.
+Cancelling the consent screen records no authorization.
 
-Safe edit:
-
-```bash
-python3 - <<'PY'
-import json
-from pathlib import Path
-p = Path('.specify/powerpack/model-routing.json')
-data = json.loads(p.read_text())
-data['active_integration'] = 'codex'
-p.write_text(json.dumps(data, indent=2, ensure_ascii=False) + '\n')
-PY
-```
-
-Do not use `--reset-config` merely to switch executors; that option intentionally restores all mutable PowerPack project config to packaged defaults.
+The persistent Playwright profile is separate from Windows Edge/Chrome history, cookies and localStorage. Do not point PowerPack at the Windows browser `User Data` directory.
 
 ## 6. Verify the Codex reviewer route
 
 A Codex-first project needs an in-session Sol reviewer configuration unless the review is already executing in a proven Sol/xhigh/read-only context.
 
-For projects that use Codex custom agents, the expected effective configuration is equivalent to:
+Expected effective configuration:
 
 ```toml
 name = "speckit_sol_reviewer"
@@ -176,9 +163,7 @@ sandbox_mode = "read-only"
 
 The reviewer must be independent/read-only and must not own implementation writes.
 
-If your project already contains `.codex/agents/speckit-sol-reviewer.toml`, keep the project-specific reviewer instructions as long as the effective model/effort/sandbox contract above remains intact.
-
-## 7. Diagnose the installation
+## 7. Diagnose the installation and review readiness
 
 Run:
 
@@ -186,12 +171,30 @@ Run:
 speckit-powerpack doctor
 ```
 
-Then inspect the installed configuration:
+Expected required checks include:
+
+```text
+OK   specify
+OK   spec-kit-compatible
+OK   spec-kit-project
+OK   powerpack-runtime
+OK   selected-executor
+OK   web-review-required
+OK   playwright-package
+OK   playwright-browser
+OK   chatgpt-authenticated
+OK   chatgpt-project-bound
+```
+
+`chatgpt-authenticated` means the isolated profile has a user-confirmed `playwright-consent` grant. Live session validity is still re-established by the actual browser gate at review time; no password/cookie is copied into project configuration.
+
+Inspect configuration:
 
 ```bash
 cat .specify/powerpack/model-routing.json
 cat .specify/powerpack/full-cycle.json
 cat .specify/powerpack/prerequisites.json
+cat .specify/powerpack/review.json
 ```
 
 Important expected values:
@@ -203,6 +206,9 @@ full-cycle           -> gpt-5.6-terra/high
 implement-review     -> gpt-5.6-terra/high parent
 converge gate        -> gpt-5.6-sol/high
 independent reviewer -> gpt-5.6-sol/xhigh/read-only
+chatgpt_web.required = true
+chatgpt_web.enabled = true
+chatgpt_web.authorization = playwright-consent
 ```
 
 The full-cycle config must keep:
@@ -214,11 +220,19 @@ The full-cycle config must keep:
 }
 ```
 
-## 8. Open a new Codex session
+## 8. Existing PowerPack installation: switch active integration safely
+
+If an older installation was Claude-first, inspect `.specify/powerpack/model-routing.json`. For a Codex-first project, set only:
+
+```json
+"active_integration": "codex"
+```
+
+Do not use `--reset-config` merely to switch executors; that option restores all mutable PowerPack project config to packaged defaults.
+
+## 9. Open a new Codex session
 
 After installing/rematerializing skills, close/reopen the Codex project session from the repository root so the agent sees the new generated skill catalog and project routing.
-
-Do not start the parent session with a CLI model override that contradicts the project routing when you want Terra to remain the parent.
 
 Recommended environment hint when executor auto-detection is ambiguous:
 
@@ -226,7 +240,7 @@ Recommended environment hint when executor auto-detection is ambiguous:
 export SPECKIT_POWERPACK_EXECUTOR=codex
 ```
 
-## 9. Smoke test before real implementation
+## 10. Smoke test before real implementation
 
 Start with read-only/low-risk checks:
 
@@ -234,7 +248,7 @@ Start with read-only/low-risk checks:
 $speckit-debt-list ALL
 ```
 
-or inspect routing through the runtime:
+Inspect routing:
 
 ```bash
 python .specify/powerpack/bin/powerpack.py model route --stage implement
@@ -242,17 +256,13 @@ python .specify/powerpack/bin/powerpack.py model route --stage converge
 python .specify/powerpack/bin/powerpack.py model route --stage implement-review
 ```
 
-Then verify the full-cycle state machine on the intended SPEC without skipping phases:
+Then inspect full-cycle state if relevant:
 
 ```bash
 python .specify/powerpack/bin/full_cycle.py status --feature-dir <SPEC_DIR>
 ```
 
-If no run exists yet, that status is expected to say the cycle has not started.
-
-## 10. Normal Codex-first operation
-
-Manual happy path:
+## 11. Normal Codex-first operation
 
 ```text
 $speckit-specify ...
@@ -266,15 +276,27 @@ $speckit-implement
 $speckit-implement-review <spec-id>
 ```
 
-For an existing already-specified SPEC, `speckit-full-cycle` starts from the configured post-specification phases and enforces their order.
+Before `implement-review` accepts review work, PowerPack readiness must prove the mandatory Web authorization and exact Project binding. A Sol approval alone is not enough for `COMPLETE`.
 
-If `implement-review` reaches its review limit without approval, it must not silently buy more rounds. Use the suggested explicit extension, normally:
+If the review limit is exhausted without both gates approving the current snapshot:
 
 ```text
 $speckit-implement-review extend 2
 ```
 
-## 11. When Claude Code becomes available again
+No silent extension is allowed.
+
+## 12. Revoking Web access
+
+The browser profile is PowerPack-owned and platform-scoped. To remove the stored profile:
+
+```bash
+speckit-powerpack review auth forget atsel
+```
+
+After profile removal, `doctor` must fail Web readiness until a new explicit `review authorize` grant is completed. Project source and SpecKit artifacts are unaffected.
+
+## 13. When Claude Code becomes available again
 
 PowerPack is executor-aware; you do not need a different SDD design. Claude can later become the primary executor again by switching the active integration and rematerializing as needed.
 
@@ -283,10 +305,4 @@ The semantic workflow remains identical. Only model routing changes:
 - Claude: Sonnet parent, Haiku bounded worker, Opus conditional advisor, external Codex Sol/xhigh reviewer;
 - Codex: Terra parent, Luna bounded worker, Sol advisor/gate/reviewer.
 
-Never keep two contradictory “authoritative” model-routing configurations active for the same execution. Choose one primary integration per project/runtime session.
-
-## Optional ChatGPT Project Web gate
-
-The Web second gate remains optional. A Codex-only review can converge without it when `chatgpt_web.enabled=false`.
-
-If enabled later, configure the platform-scoped browser profile/project binding separately. WSL uses the Linux profile namespace; do not reuse a Windows browser profile directory directly from WSL.
+The mandatory isolated ChatGPT Project Web gate remains the same across executors.
