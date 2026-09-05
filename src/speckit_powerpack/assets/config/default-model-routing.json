@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "active_integration": "claude",
+  "stages": {
+    "specify": "balanced",
+    "clarify": "balanced",
+    "plan": "reasoning",
+    "checklist": "economical",
+    "checklist-converge": "reasoning",
+    "tasks": "economical",
+    "analyze": "reasoning",
+    "implement": "coding",
+    "converge": "reasoning",
+    "implement-review": "reviewer"
+  },
+  "integrations": {
+    "claude": {
+      "economical": "haiku",
+      "balanced": "sonnet",
+      "coding": "sonnet",
+      "reasoning": "sonnet",
+      "reviewer": "opus",
+      "advisor": "opus"
+    },
+    "codex": {
+      "economical": "luna",
+      "balanced": "sol",
+      "coding": "sol",
+      "reasoning": "tera",
+      "reviewer": "tera"
+    },
+    "gemini": {
+      "economical": "auto",
+      "balanced": "auto",
+      "coding": "auto",
+      "reasoning": "auto",
+      "reviewer": "auto"
+    },
+    "grok": {
+      "economical": "auto",
+      "balanced": "auto",
+      "coding": "auto",
+      "reasoning": "auto",
+      "reviewer": "auto"
+    }
+  }
+}
