@@ -74,20 +74,46 @@ def test_technical_debt_policy_forbids_review_escape_hatch():
 
 def test_full_cycle_defaults_preserve_safety_invariants():
     config = json.loads((ASSETS / "config" / "default-full-cycle.json").read_text(encoding="utf-8"))
+    assert config["schema_version"] == 2
     assert config["behavior"]["same_spec_only"] is True
     assert config["behavior"]["stop_on_blocked"] is True
     assert config["behavior"]["allow_debt_escape_hatch"] is False
+    assert config["behavior"]["explicit_initial_implement_required"] is True
+    assert config["behavior"]["implement_review_owns_convergence"] is True
+    assert config["phases"]["implement"] is True
     assert config["phases"]["implement_review"] is True
+    assert "converge" not in config["phases"]
+
+
+def test_implement_review_contract_starts_from_explicit_implement_then_converges():
+    text = (PRESET / "commands" / "speckit.implement-review.md").read_text(encoding="utf-8")
+    assert "speckit-implement\n  -> speckit-implement-review" in text
+    assert "MUST NOT perform the initial implementation" in text
+    assert "The first productive action after the predecessor gate is `speckit-converge`" in text
+    assert "implement fixes\n  -> converge" in text
+    assert "BLOCKED_BUDGET" in text
+    assert "gpt-5.6-terra/high" in text
+    assert "gpt-5.6-sol/xhigh/read-only" in text
+    assert "NEVER launch another `codex` CLI recursively" in text
 
 
 def test_model_routing_covers_workflows_without_changing_review_profile():
     routing = json.loads((ASSETS / "config" / "default-model-routing.json").read_text(encoding="utf-8"))
-    assert routing["stages"]["full-cycle"] == "reasoning"
+    assert routing["schema_version"] == 2
+    assert routing["stages"]["full-cycle"] == "orchestration"
+    assert routing["stages"]["implement-review"] == "orchestration"
+    assert routing["stages"]["converge"] == "semantic_gate"
     assert routing["stages"]["debt-list"] == "economical"
     assert routing["stages"]["debt-consult"] == "economical"
     assert routing["stages"]["powerpack-update"] == "economical"
     assert routing["integrations"]["claude"]["economical"] == "haiku"
-    assert routing["integrations"]["codex"]["economical"] == "luna"
+    assert routing["integrations"]["codex"]["economical"] == "gpt-5.6-luna"
+    assert routing["integrations"]["codex"]["coding"] == "gpt-5.6-terra"
+    assert routing["integrations"]["codex"]["orchestration"] == "gpt-5.6-terra"
+    assert routing["integrations"]["codex"]["semantic_gate"] == "gpt-5.6-sol"
+    assert routing["integrations"]["codex"]["reviewer"] == "gpt-5.6-sol"
+    assert routing["effort"]["codex"]["coding"] == "high"
+    assert routing["effort"]["codex"]["reviewer"] == "xhigh"
     assert routing["reviewer_contract"]["codex"] == {
         "model": "gpt-5.6-sol",
         "reasoning_effort": "xhigh",
