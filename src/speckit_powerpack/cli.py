@@ -100,6 +100,8 @@ def install_support(project: Path, integration: str) -> None:
                 dest.chmod(0o755)
     with asset("review/deep-review-protocol.md") as source:
         shutil.copy2(source, base / "deep-review-protocol.md")
+    with asset("policies/technical-debt.md") as source:
+        shutil.copy2(source, base / "technical-debt-policy.md")
     with asset("config/default-model-routing.json") as source:
         routing = json.loads(source.read_text(encoding="utf-8"))
     routing["active_integration"] = integration
@@ -110,6 +112,9 @@ def install_support(project: Path, integration: str) -> None:
     with asset("config/default-technical-debt.json") as source:
         debt = json.loads(source.read_text(encoding="utf-8"))
     write_json(base / "technical-debt.json", debt)
+    with asset("config/default-full-cycle.json") as source:
+        full_cycle = json.loads(source.read_text(encoding="utf-8"))
+    write_json(base / "full-cycle.json", full_cycle)
     write_json(base / "prerequisites.json", {
         "schema_version": 1,
         "mode": "strict",
