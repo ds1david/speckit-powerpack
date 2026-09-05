@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "backlog_path": "docs/technical-debt.md",
+  "id_prefix": "TD",
+  "project_policy_paths": [],
+  "priorities": ["P1", "P2", "P3"],
+  "statuses": ["OPEN", "IN_PROGRESS", "RESOLVED"],
+  "readiness": ["READY", "BLOCKED", "NEEDS_REFINEMENT", "RESOLVED"],
+  "creation_policy": {
+    "powerpack_policy_is_minimum_floor": true,
+    "forbid_active_review_findings": true,
+    "forbid_active_convergence_gaps": true,
+    "forbid_blockers": true,
+    "deduplicate_before_create": true,
+    "group_related_capabilities": true,
+    "require_explicit_deferral_rationale": true,
+    "required_fields": [
+      "owner",
+      "description",
+      "origin",
+      "impact",
+      "priority",
+      "resolution_criteria",
+      "deferral_rationale"
+    ]
+  }
+}
