@@ -29,6 +29,19 @@ def test_debt_and_full_cycle_commands_are_packaged():
     ]
     for filename in expected:
         assert (commands / filename).is_file(), filename
+    assert (ASSETS / "runtime" / "powerpack_debt.py").is_file()
+    assert (ASSETS / "runtime" / "powerpack_full_cycle.py").is_file()
+
+
+def test_update_command_and_policy_are_packaged():
+    extension = ASSETS / "extensions" / "powerpack-tools"
+    manifest = (extension / "extension.yml").read_text(encoding="utf-8")
+    assert (extension / "commands" / "update.md").is_file()
+    assert 'name: "speckit.powerpack-tools.update"' in manifest
+    update = json.loads((ASSETS / "config" / "default-update.json").read_text(encoding="utf-8"))
+    assert update["auto_check_on_install"] is True
+    assert update["confirmation_required"] is True
+    assert update["force"]["destructive_git_operations"] is False
 
 
 def test_review_defaults_require_platform_scoped_web_profiles():
