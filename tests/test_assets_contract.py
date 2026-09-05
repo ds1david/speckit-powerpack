@@ -53,7 +53,10 @@ def test_technical_debt_policy_forbids_review_escape_hatch():
     assert policy["forbid_active_convergence_gaps"] is True
     assert policy["forbid_blockers"] is True
     assert policy["powerpack_policy_is_minimum_floor"] is True
+    assert debt["storage_format"] == "markdown-v1"
+    assert debt["template_path"] == ".specify/powerpack/technical-debt-template.md"
     assert (ASSETS / "policies" / "technical-debt.md").is_file()
+    assert (ASSETS / "templates" / "technical-debt-backlog.md").is_file()
 
 
 def test_full_cycle_defaults_preserve_safety_invariants():
@@ -62,3 +65,17 @@ def test_full_cycle_defaults_preserve_safety_invariants():
     assert config["behavior"]["stop_on_blocked"] is True
     assert config["behavior"]["allow_debt_escape_hatch"] is False
     assert config["phases"]["implement_review"] is True
+
+
+def test_model_routing_covers_full_cycle_and_debt_without_changing_review_profile():
+    routing = json.loads((ASSETS / "config" / "default-model-routing.json").read_text(encoding="utf-8"))
+    assert routing["stages"]["full-cycle"] == "reasoning"
+    assert routing["stages"]["debt-list"] == "economical"
+    assert routing["stages"]["debt-consult"] == "economical"
+    assert routing["integrations"]["claude"]["economical"] == "haiku"
+    assert routing["integrations"]["codex"]["economical"] == "luna"
+    assert routing["reviewer_contract"]["codex"] == {
+        "model": "gpt-5.6-sol",
+        "reasoning_effort": "xhigh",
+        "sandbox": "read-only",
+    }
