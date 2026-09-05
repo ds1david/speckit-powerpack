@@ -25,7 +25,19 @@ def test_account_consent_page_discloses_isolated_profile_and_account_scope(tmp_p
     assert "duas assinaturas/contas" in html
     assert str(profile_dir) in html
     assert "ds1david-plus" in html
+    assert "Já concluí o login — validar conta" in html
+    assert "este botão não concede acesso" in html
+    assert "2. Conta validada" in html
     assert "Conceder acesso à conta" in html
+
+
+def test_chatgpt_login_verification_rejects_auth_routes_and_login_prompts():
+    assert onboarding.chatgpt_login_verified("https://chatgpt.com/auth/login", "") is False
+    assert onboarding.chatgpt_login_verified("https://chatgpt.com/", "Log in Continue with Google") is False
+    assert onboarding.chatgpt_login_verified("https://chatgpt.com/", "Entrar Continuar com Google") is False
+    assert onboarding.chatgpt_login_verified("https://example.com/", "ChatGPT") is False
+    assert onboarding.chatgpt_login_verified("https://chatgpt.com/", "New chat Projects") is True
+    assert onboarding.chatgpt_login_verified("https://chatgpt.com/g/g-p-demo/project", "ATSEL") is True
 
 
 def test_project_url_helpers_accept_project_and_reject_non_chatgpt():

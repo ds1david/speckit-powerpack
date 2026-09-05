@@ -26,6 +26,19 @@ browser-profiles/linux/webflow/
 
 Those two directories have independent cookies, local storage, ChatGPT sessions and account identity. They are also independent from Windows browser data.
 
+## Codex device auth is not the ChatGPT Web profile
+
+`codex login --device-auth` is a clean way to authenticate the Codex CLI, but it does **not** create or transfer a ChatGPT Web browser session into a PowerPack Playwright profile. PowerPack never copies Codex OAuth tokens, browser cookies or session material between those contexts.
+
+The two identities may belong to the same human/account, but they are still different authenticated runtimes:
+
+```text
+Codex CLI auth        -> Codex execution identity
+PowerPack Playwright  -> ChatGPT Web review identity
+```
+
+The Web gate therefore still needs one explicit browser login per PowerPack profile.
+
 ## Authorize one ChatGPT account
 
 ```bash
@@ -33,7 +46,21 @@ speckit-powerpack review auth authorize ds1david \
   --account-label ds1david-plus
 ```
 
-The visible Playwright Chromium window first shows a PowerPack consent page and then opens ChatGPT. Credentials/MFA are entered only on ChatGPT. The resulting grant is account-scoped:
+The visible Playwright Chromium flow is intentionally staged:
+
+1. PowerPack shows the isolated profile path and asks whether to start authorization.
+2. **Autorizar e abrir ChatGPT** opens a separate ChatGPT tab and leaves that tab in the foreground.
+3. Complete the entire ChatGPT login, including provider login and MFA/OTP.
+4. Wait until the normal ChatGPT interface is visible.
+5. Return to the PowerPack consent tab.
+6. Click **Já concluí o login — validar conta**.
+7. PowerPack checks that the ChatGPT tab no longer appears to be in an auth/login flow.
+8. Only after that check succeeds is **Conceder acesso à conta** shown.
+9. A final verification runs immediately before the account grant is persisted.
+
+The login-validation button does not grant access. If the ChatGPT tab still appears to be on a login/auth page, PowerPack keeps the grant blocked and shows an error instead of recording a false authorization.
+
+Credentials/MFA are entered only on ChatGPT. The resulting grant is account-scoped:
 
 ```text
 source = playwright-account-consent
@@ -42,6 +69,8 @@ account_label = ds1david-plus
 ```
 
 It is not tied to a Project yet.
+
+If the ChatGPT account was originally created with an external identity provider such as Google, Microsoft or Apple, use the authentication method required by that account. A provider may reject an automated/testing browser; that is an authentication-provider/browser compatibility issue, not evidence that the PowerPack grant succeeded. Do not click through or mark the account authorized while the provider login is incomplete.
 
 A second subscription/account gets another isolated profile:
 
@@ -151,8 +180,6 @@ speckit-powerpack review project accept-invite \
 
 The invite/shared link opens in the `webflow` profile. Accept/join the Project in the browser if needed, navigate to the resulting Project, then return to the terminal. PowerPack persists only the final Project URL.
 
-ChatGPT supports shared Projects for Free, Go, Plus and Pro users. A Project owner may invite users directly or, when configured for link access, allow logged-in users with the link to join. Opening/interacting with a shared Project URL can also make it appear in the collaborator's sidebar.
-
 ## One Project, multiple reviewer accounts
 
 A single local alias can have multiple bindings on the same platform:
@@ -253,6 +280,7 @@ A stale binding after account reauthorization does not satisfy this gate.
 ## Security boundaries
 
 - Credentials/MFA are entered only on ChatGPT.
+- Codex OAuth/device-auth tokens are never copied into the Playwright profile.
 - Browser session state is outside the Git repository.
 - PowerPack profiles never point to the default Windows Edge/Chrome profile.
 - Each account gets a distinct persistent profile directory.
