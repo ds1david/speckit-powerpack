@@ -60,6 +60,23 @@ def _account_authorized(global_data: dict[str, Any], platform: str, profile: str
     )
 
 
+def _platform_bindings(registered: dict[str, Any], platform: str) -> dict[str, dict[str, Any]]:
+    raw = registered.get("bindings", {}).get(platform)
+    if not isinstance(raw, dict):
+        return {}
+    if "url" in raw and "profile" in raw:
+        profile = str(raw.get("profile") or "legacy")
+        return {profile: raw}
+    return {str(profile): binding for profile, binding in raw.items() if isinstance(binding, dict)}
+
+
+def _binding_for(registered: dict[str, Any], platform: str, profile: str | None) -> dict[str, Any] | None:
+    bindings = _platform_bindings(registered, platform)
+    if profile and profile in bindings:
+        return bindings[profile]
+    return None
+
+
 def review_readiness(project: Path) -> dict[str, bool]:
     try:
         _, review = _review_config(project)
@@ -81,7 +98,7 @@ def review_readiness(project: Path) -> dict[str, bool]:
     _, global_data = core.global_config()
     account_ok = _account_authorized(global_data, platform, profile)
     registered = global_data.get("projects", {}).get(alias) if alias else None
-    binding = registered.get("bindings", {}).get(platform) if isinstance(registered, dict) else None
+    binding = _binding_for(registered, platform, profile) if isinstance(registered, dict) else None
     project_ok = bool(
         account_ok
         and alias
@@ -122,7 +139,7 @@ def print_review_setup_status(project: Path) -> None:
 def _persist_account(result: AccountAuthorizationResult) -> None:
     path, data = core.global_config()
     platform = result.platform
-    data.setdefault("schema_version", 3)
+    data["schema_version"] = max(3, int(data.get("schema_version", 0) or 0))
     data.setdefault("active_profiles", {})[platform] = result.profile
     data.setdefault("accounts", {}).setdefault(platform, {})[result.profile] = {
         "source": ACCOUNT_AUTH_SOURCE,
@@ -130,7 +147,6 @@ def _persist_account(result: AccountAuthorizationResult) -> None:
         "profile_dir": result.profile_dir,
         "granted_at": result.granted_at,
     }
-    # Keep a compatibility marker for older diagnostics, but account consent is authoritative.
     data.setdefault("authenticated_profiles", {}).setdefault(platform, {})[result.profile] = {
         "confirmed": True,
         "source": ACCOUNT_AUTH_SOURCE,
@@ -186,10 +202,9 @@ def cmd_auth_use(args: argparse.Namespace) -> None:
 
 def cmd_auth_reconfigure(args: argparse.Namespace) -> None:
     if args.fresh:
-        profile = core.profile_dir(args.profile, create=False)
-        if profile.exists():
-            import shutil as _shutil
-            _shutil.rmtree(profile)
+        profile_path = core.profile_dir(args.profile, create=False)
+        if profile_path.exists():
+            shutil.rmtree(profile_path)
         path, data = core.global_config()
         current = core.platform_key()
         data.setdefault("accounts", {}).setdefault(current, {}).pop(args.profile, None)
@@ -233,7 +248,13 @@ def _persist_binding(*, alias: str, candidate: ProjectCandidate, profile: str, p
     _, account = _require_authorized_profile(profile)
     registered = data.setdefault("projects", {}).setdefault(alias, {"bindings": {}})
     registered["display_name"] = candidate.name
-    registered.setdefault("bindings", {})[current] = {
+    platform_bindings = registered.setdefault("bindings", {}).setdefault(current, {})
+    if isinstance(platform_bindings, dict) and "url" in platform_bindings and "profile" in platform_bindings:
+        legacy = dict(platform_bindings)
+        legacy_profile = str(legacy.get("profile") or "legacy")
+        registered["bindings"][current] = {legacy_profile: legacy}
+        platform_bindings = registered["bindings"][current]
+    platform_bindings[profile] = {
         "url": core.validate_project_url(candidate.url),
         "profile": profile,
         "account_label": account.get("account_label") or profile,
@@ -272,8 +293,8 @@ def cmd_project_discover(args: argparse.Namespace) -> None:
     profile = _profile_for(args)
     projects = _discover(profile)
     if not projects:
-        print("No Project links were discovered in the current ChatGPT sidebar for this account.")
-        print("You can still use 'project accept-invite' or open a Project URL with 'project add'.")
+        print("No Project links were discovered in the currently loaded ChatGPT sidebar for this account.")
+        print("Use 'project add' for a known Project URL or 'project accept-invite' for a shared/invite link.")
         return
     for index, item in enumerate(projects, start=1):
         print(f"{index:2}. {item.name} | {item.url}")
@@ -333,6 +354,29 @@ def cmd_project_accept_invite(args: argparse.Namespace) -> None:
     _persist_binding(alias=alias, candidate=candidate, profile=profile, project_path=Path(args.path).resolve())
 
 
+def _select_binding(registered: dict[str, Any], platform: str, requested_profile: str | None) -> tuple[str, dict[str, Any]]:
+    bindings = _platform_bindings(registered, platform)
+    if not bindings:
+        raise core.PowerPackError("Project has no binding for the current platform.")
+    if requested_profile:
+        binding = bindings.get(requested_profile)
+        if not binding:
+            raise core.PowerPackError(
+                f"Project is not registered for profile '{requested_profile}'. Available profiles: {', '.join(sorted(bindings))}"
+            )
+        return requested_profile, binding
+    _, data = core.global_config()
+    active = data.get("active_profiles", {}).get(platform)
+    if active in bindings:
+        return str(active), bindings[str(active)]
+    if len(bindings) == 1:
+        profile, binding = next(iter(bindings.items()))
+        return profile, binding
+    raise core.PowerPackError(
+        "Project has multiple reviewer-account bindings. Pass --profile explicitly. Available: " + ", ".join(sorted(bindings))
+    )
+
+
 def cmd_project_use(args: argparse.Namespace) -> None:
     project = Path(args.path).resolve()
     _, data = core.global_config()
@@ -340,11 +384,8 @@ def cmd_project_use(args: argparse.Namespace) -> None:
     registered = data.get("projects", {}).get(args.alias)
     if not isinstance(registered, dict):
         raise core.PowerPackError(f"Unknown project alias: {args.alias}")
-    binding = registered.get("bindings", {}).get(current)
-    if not isinstance(binding, dict):
-        raise core.PowerPackError(f"Project alias '{args.alias}' has no binding for {current}.")
-    profile = binding.get("profile")
-    _require_authorized_profile(str(profile or ""))
+    profile, binding = _select_binding(registered, current, getattr(args, "profile", None))
+    _require_authorized_profile(profile)
     if binding.get("authorization") != PROJECT_BINDING_AUTH:
         raise core.PowerPackError("This Project has only a legacy binding; re-select/add it with an authorized account profile.")
     candidate = ProjectCandidate(name=registered.get("display_name") or args.alias, url=binding["url"])
@@ -357,15 +398,21 @@ def cmd_project_list(args: argparse.Namespace) -> None:
     for alias, project in sorted(data.get("projects", {}).items()):
         if not isinstance(project, dict):
             continue
-        bindings = project.get("bindings", {})
-        targets = bindings.items() if args.all_platforms else [(current, bindings.get(current))]
-        for platform_name, binding in targets:
-            if not isinstance(binding, dict):
-                continue
-            print(
-                f"{alias}: name={project.get('display_name') or alias} platform={platform_name} "
-                f"profile={binding.get('profile')} account={binding.get('account_label')} url={binding.get('url')}"
-            )
+        platforms = project.get("bindings", {})
+        platform_names = sorted(platforms) if args.all_platforms else [current]
+        for platform_name in platform_names:
+            for profile, binding in sorted(_platform_bindings(project, platform_name).items()):
+                print(
+                    f"{alias}: name={project.get('display_name') or alias} platform={platform_name} "
+                    f"profile={profile} account={binding.get('account_label')} url={binding.get('url')}"
+                )
+
+
+def cmd_legacy_authorize_deprecated(args: argparse.Namespace) -> None:
+    raise core.PowerPackError(
+        "Project-scoped 'review authorize' is deprecated. Authorize the ChatGPT account first with "
+        "'review auth authorize <profile>', then use 'review project select/add/accept-invite'."
+    )
 
 
 def cmd_doctor(args: argparse.Namespace) -> None:
@@ -414,6 +461,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     review = root.choices["review"]
     rsub = _subparsers(review)
+    rsub.choices["authorize"].set_defaults(func=cmd_legacy_authorize_deprecated)
+
     auth = rsub.choices["auth"]
     asub = _subparsers(auth)
     p = asub.add_parser("authorize", help="Authorize one isolated ChatGPT account profile")
@@ -455,14 +504,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--path", default=".")
     p.set_defaults(func=cmd_project_accept_invite)
 
-    # Override existing project list/use with the account-aware contract.
     psub.choices["list"].set_defaults(func=cmd_project_list)
-    psub.choices["use"].set_defaults(func=cmd_project_use)
+    use_parser = psub.choices["use"]
+    use_parser.add_argument("--profile")
+    use_parser.set_defaults(func=cmd_project_use)
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
-    # Installation messages should describe account authorization + later Project selection.
     core.review_readiness = review_readiness
     core.print_review_setup_status = print_review_setup_status
     args = build_parser().parse_args(argv)
@@ -477,6 +526,5 @@ def main(argv: list[str] | None = None) -> int:
         return 130
 
 
-# Apply for imported callers that invoke core install/update functions through this entrypoint.
 core.review_readiness = review_readiness
 core.print_review_setup_status = print_review_setup_status
