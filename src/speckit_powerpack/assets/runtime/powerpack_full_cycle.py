@@ -9,15 +9,8 @@ from pathlib import Path
 from typing import Any
 
 PHASE_ORDER = [
-    "clarify",
-    "plan",
-    "checklist",
-    "checklist_converge",
-    "tasks",
-    "analyze",
-    "implement",
-    "converge",
-    "implement_review",
+    "clarify", "plan", "checklist", "checklist_converge", "tasks",
+    "analyze", "implement", "converge", "implement_review",
 ]
 
 
@@ -36,8 +29,7 @@ def find_root(start: Path | None = None) -> Path:
 def resolve_feature(root: Path, raw: str | None) -> Path:
     if raw:
         path = Path(raw)
-        if not path.is_absolute():
-            path = root / path
+        path = path if path.is_absolute() else root / path
         if not path.is_dir():
             raise SystemExit(f"BLOCKED: feature directory not found: {path}")
         return path.resolve()
@@ -59,12 +51,9 @@ def feature_id(root: Path, feature: Path) -> str:
         return feature.name
 
 
-def key(root: Path, feature: Path) -> str:
-    return feature_id(root, feature).replace("/", "__").replace("\\", "__")
-
-
 def state_path(root: Path, feature: Path) -> Path:
-    return root / ".specify" / "powerpack" / "runtime" / "full-cycle" / f"{key(root, feature)}.json"
+    key = feature_id(root, feature).replace("/", "__").replace("\\", "__")
+    return root / ".specify" / "powerpack" / "runtime" / "full-cycle" / f"{key}.json"
 
 
 def read_json(path: Path) -> dict[str, Any]:
@@ -77,24 +66,19 @@ def read_json(path: Path) -> dict[str, Any]:
     return data
 
 
-def load_config(root: Path) -> dict[str, Any]:
+def config(root: Path) -> dict[str, Any]:
     return read_json(root / ".specify" / "powerpack" / "full-cycle.json")
 
 
 def enabled_phases(cfg: dict[str, Any]) -> list[str]:
-    phases = cfg.get("phases", {}) if isinstance(cfg.get("phases"), dict) else {}
-    result: list[str] = []
-    for phase in PHASE_ORDER:
-        if phases.get(phase, True) is False:
-            continue
-        result.append(phase)
-    return result
+    values = cfg.get("phases", {}) if isinstance(cfg.get("phases"), dict) else {}
+    return [phase for phase in PHASE_ORDER if values.get(phase, True) is not False]
 
 
-def write_state(path: Path, data: dict[str, Any]) -> None:
+def write_state(path: Path, state: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    data["updated_at"] = now()
-    path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    state["updated_at"] = now()
+    path.write_text(json.dumps(state, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
 def load_state(root: Path, feature: Path) -> dict[str, Any]:
@@ -104,38 +88,45 @@ def load_state(root: Path, feature: Path) -> dict[str, Any]:
     return read_json(path)
 
 
-def next_sequential(phases: list[str], phase: str) -> str:
+def next_phase(phases: list[str], current: str) -> str:
     try:
-        index = phases.index(phase)
+        index = phases.index(current)
     except ValueError:
-        raise SystemExit(f"BLOCKED_CONFIGURATION: phase {phase} is not enabled")
+        raise SystemExit(f"BLOCKED_CONFIGURATION: phase {current} is not enabled")
     return phases[index + 1] if index + 1 < len(phases) else "DONE"
 
 
+def persist_and_print(root: Path, feature: Path, state: dict[str, Any], code: int = 0) -> int:
+    write_state(state_path(root, feature), state)
+    print(json.dumps(state, ensure_ascii=False, indent=2))
+    return code
+
+
 def cmd_start(args: argparse.Namespace) -> int:
-    root = find_root()
-    feature = resolve_feature(root, args.feature_dir)
-    cfg = load_config(root)
+    root = find_root(); feature = resolve_feature(root, args.feature_dir); cfg = config(root)
     behavior = cfg.get("behavior", {}) if isinstance(cfg.get("behavior"), dict) else {}
-    if behavior.get("same_spec_only") is not True or behavior.get("stop_on_blocked") is not True or behavior.get("allow_debt_escape_hatch") is not False:
+    invariant_ok = (
+        behavior.get("same_spec_only") is True
+        and behavior.get("stop_on_blocked") is True
+        and behavior.get("allow_debt_escape_hatch") is False
+    )
+    if not invariant_ok:
         print(json.dumps({"status": "BLOCKED_CONFIGURATION", "reason": "non-weakenable-full-cycle-invariant-changed"}))
         return 8
     path = state_path(root, feature)
     if path.exists() and not args.restart:
-        state = read_json(path)
-        print(json.dumps({"status": "ALREADY_STARTED", "state": state}, ensure_ascii=False, indent=2))
+        print(json.dumps({"status": "ALREADY_STARTED", "state": read_json(path)}, ensure_ascii=False, indent=2))
         return 0
     phases = enabled_phases(cfg)
     if not phases:
         print(json.dumps({"status": "BLOCKED_CONFIGURATION", "reason": "no-enabled-phases"}))
         return 8
-    mode = args.mode or str(cfg.get("mode") or "interactive")
     limits = cfg.get("limits", {}) if isinstance(cfg.get("limits"), dict) else {}
     state = {
         "schema_version": 1,
         "status": "RUNNING",
         "feature": feature_id(root, feature),
-        "mode": mode,
+        "mode": args.mode or str(cfg.get("mode") or "interactive"),
         "enabled_phases": phases,
         "current_phase": phases[0],
         "return_after_implement": None,
@@ -146,23 +137,23 @@ def cmd_start(args: argparse.Namespace) -> int:
         "history": [],
         "started_at": now(),
     }
-    write_state(path, state)
-    print(json.dumps(state, ensure_ascii=False, indent=2))
-    return 0
+    return persist_and_print(root, feature, state)
 
 
 def cmd_status(args: argparse.Namespace) -> int:
-    root = find_root()
-    feature = resolve_feature(root, args.feature_dir)
+    root = find_root(); feature = resolve_feature(root, args.feature_dir)
     print(json.dumps(load_state(root, feature), ensure_ascii=False, indent=2))
     return 0
 
 
+def block(state: dict[str, Any], reason: str) -> None:
+    state["status"] = "BLOCKED"
+    state["blocked_reason"] = reason
+
+
 def cmd_advance(args: argparse.Namespace) -> int:
-    root = find_root()
-    feature = resolve_feature(root, args.feature_dir)
-    state = load_state(root, feature)
-    if state.get("status") not in {"RUNNING", "BLOCKED"}:
+    root = find_root(); feature = resolve_feature(root, args.feature_dir); state = load_state(root, feature)
+    if state.get("status") != "RUNNING":
         print(json.dumps({"status": "BLOCKED", "reason": "cycle-not-running", "actual": state.get("status")}))
         return 9
     current = str(state.get("current_phase"))
@@ -171,54 +162,39 @@ def cmd_advance(args: argparse.Namespace) -> int:
         return 9
     outcome = args.outcome
     state.setdefault("history", []).append({"phase": current, "outcome": outcome, "evidence": args.evidence, "at": now()})
-
     if outcome == "blocked":
-        state["status"] = "BLOCKED"
-        state["blocked_reason"] = args.evidence or "phase reported blocked"
-        write_state(state_path(root, feature), state)
-        print(json.dumps(state, ensure_ascii=False, indent=2))
-        return 10
+        block(state, args.evidence or "phase reported blocked")
+        return persist_and_print(root, feature, state, 10)
 
     phases = list(state.get("enabled_phases") or [])
-
     if current == "checklist" and outcome == "skipped":
-        # If checklist itself is genuinely N/A, checklist-converge cannot have
-        # a valid predecessor and must be skipped as part of the same decision.
-        candidate = next_sequential(phases, current)
+        candidate = next_phase(phases, current)
         if candidate == "checklist_converge":
-            state.setdefault("history", []).append({
-                "phase": "checklist_converge",
-                "outcome": "skipped",
-                "evidence": "checklist not applicable; predecessor intentionally absent",
-                "at": now(),
+            state["history"].append({
+                "phase": "checklist_converge", "outcome": "skipped",
+                "evidence": "checklist not applicable; predecessor intentionally absent", "at": now(),
             })
-            state["current_phase"] = next_sequential(phases, "checklist_converge")
+            state["current_phase"] = next_phase(phases, "checklist_converge")
         else:
             state["current_phase"] = candidate
     elif current == "converge":
         state["convergence_round"] = int(state.get("convergence_round", 0)) + 1
         if state["convergence_round"] > int(state.get("max_convergence_rounds", 5)):
-            state["status"] = "BLOCKED"
-            state["blocked_reason"] = "max-convergence-rounds-exceeded"
-            write_state(state_path(root, feature), state)
-            print(json.dumps(state, ensure_ascii=False, indent=2))
-            return 11
+            block(state, "max-convergence-rounds-exceeded")
+            return persist_and_print(root, feature, state, 11)
         if outcome == "needs-implementation":
             state["return_after_implement"] = "converge"
             state["current_phase"] = "implement"
         elif outcome in {"converged", "completed"}:
-            state["current_phase"] = next_sequential(phases, current)
+            state["current_phase"] = next_phase(phases, current)
         else:
             print(json.dumps({"status": "BLOCKED", "reason": "invalid-converge-outcome", "outcome": outcome}))
             return 9
     elif current == "implement_review":
         state["review_round"] = int(state.get("review_round", 0)) + 1
         if state["review_round"] > int(state.get("max_review_rounds", 5)):
-            state["status"] = "BLOCKED"
-            state["blocked_reason"] = "max-review-rounds-exceeded"
-            write_state(state_path(root, feature), state)
-            print(json.dumps(state, ensure_ascii=False, indent=2))
-            return 12
+            block(state, "max-review-rounds-exceeded")
+            return persist_and_print(root, feature, state, 12)
         if outcome == "findings":
             state["return_after_implement"] = "implement_review"
             state["current_phase"] = "implement"
@@ -232,25 +208,20 @@ def cmd_advance(args: argparse.Namespace) -> int:
         if outcome != "completed":
             print(json.dumps({"status": "BLOCKED", "reason": "implement-must-complete-before-return", "outcome": outcome}))
             return 9
-        state["current_phase"] = state.pop("return_after_implement")
+        state["current_phase"] = str(state.get("return_after_implement"))
         state["return_after_implement"] = None
     else:
         if outcome not in {"completed", "skipped"}:
             print(json.dumps({"status": "BLOCKED", "reason": "invalid-phase-outcome", "phase": current, "outcome": outcome}))
             return 9
-        state["current_phase"] = next_sequential(phases, current)
+        state["current_phase"] = next_phase(phases, current)
         if state["current_phase"] == "DONE":
             state["status"] = "DONE"
-
-    write_state(state_path(root, feature), state)
-    print(json.dumps(state, ensure_ascii=False, indent=2))
-    return 0
+    return persist_and_print(root, feature, state)
 
 
 def cmd_resume(args: argparse.Namespace) -> int:
-    root = find_root()
-    feature = resolve_feature(root, args.feature_dir)
-    state = load_state(root, feature)
+    root = find_root(); feature = resolve_feature(root, args.feature_dir); state = load_state(root, feature)
     if state.get("status") == "BLOCKED" and args.unblock:
         state["status"] = "RUNNING"
         state.pop("blocked_reason", None)
@@ -260,9 +231,7 @@ def cmd_resume(args: argparse.Namespace) -> int:
 
 
 def cmd_abort(args: argparse.Namespace) -> int:
-    root = find_root()
-    feature = resolve_feature(root, args.feature_dir)
-    path = state_path(root, feature)
+    root = find_root(); feature = resolve_feature(root, args.feature_dir); path = state_path(root, feature)
     existed = path.exists()
     if existed:
         path.unlink()
