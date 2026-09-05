@@ -13,6 +13,18 @@ from urllib.parse import urljoin, urlparse
 
 
 CHATGPT_ORIGINS = {"chatgpt.com", "www.chatgpt.com"}
+LOGIN_PATH_PREFIXES = ("/auth", "/login", "/signup", "/sign-up")
+LOGIN_PROMPT_TOKENS = (
+    "continue with google",
+    "continue with microsoft",
+    "continue with apple",
+    "log in",
+    "sign up",
+    "entrar",
+    "continuar com google",
+    "continuar com microsoft",
+    "continuar com apple",
+)
 
 
 @dataclass(frozen=True)
@@ -125,6 +137,23 @@ def same_chatgpt_project(actual_url: str, requested_url: str) -> bool:
     )
 
 
+def chatgpt_login_verified(url: str, visible_text: str = "") -> bool:
+    """Best-effort UI-level proof that the selected Playwright tab left the login flow.
+
+    This deliberately avoids reading/storing auth cookies or tokens. The actual Web review
+    still re-establishes the browser session when it runs.
+    """
+    if not is_chatgpt_url(url):
+        return False
+    path = urlparse(url).path.rstrip("/").casefold()
+    if any(path == prefix or path.startswith(prefix + "/") for prefix in LOGIN_PATH_PREFIXES):
+        return False
+    normalized = " ".join((visible_text or "").casefold().split())
+    if any(token in normalized for token in LOGIN_PROMPT_TOKENS):
+        return False
+    return True
+
+
 def account_consent_html(*, profile: str, account_label: str | None, profile_dir: Path) -> str:
     profile_text = escape(profile)
     account_text = escape(account_label or profile)
@@ -140,22 +169,46 @@ main {{ max-width: 780px; margin: 48px auto; padding: 32px; background: #1f2937;
 h1 {{ margin-top: 0; }}
 code {{ background: #111827; padding: 2px 6px; border-radius: 6px; overflow-wrap: anywhere; }}
 .notice {{ padding: 16px; background: #0f172a; border-left: 4px solid #60a5fa; margin: 20px 0; }}
-.actions {{ display: flex; gap: 12px; margin-top: 28px; }}
+.success {{ border-left-color: #34d399; }}
+.error {{ border-left-color: #f87171; }}
+.actions {{ display: flex; gap: 12px; margin-top: 28px; flex-wrap: wrap; }}
 button {{ border: 0; border-radius: 8px; padding: 12px 18px; font-weight: 700; cursor: pointer; }}
 .primary {{ background: #f9fafb; color: #111827; }}
 .secondary {{ background: #374151; color: #f9fafb; }}
-#grant {{ display: none; }}
+#login-step, #grant {{ display: none; }}
 .small {{ color: #d1d5db; font-size: 0.92rem; }}
+.steps li {{ margin: 9px 0; }}
 </style>
 <script>
 window.__powerpackDecision = null;
+window.__powerpackLoginCheck = null;
 window.__powerpackGrant = null;
-function authorize() {{ window.__powerpackDecision = 'authorize'; }}
-function cancel() {{ window.__powerpackDecision = 'cancel'; window.__powerpackGrant = 'cancel'; }}
+function authorize() {{ window.__powerpackDecision = 'authorize'; showLoginStep(); }}
+function cancel() {{
+  window.__powerpackDecision = 'cancel';
+  window.__powerpackLoginCheck = 'cancel';
+  window.__powerpackGrant = 'cancel';
+}}
+function requestLoginCheck() {{ window.__powerpackLoginCheck = 'check'; }}
+function resetLoginCheck() {{ window.__powerpackLoginCheck = null; }}
 function grant() {{ window.__powerpackGrant = 'grant'; }}
-function showGrant() {{
+function showLoginStep() {{
   document.getElementById('initial').style.display = 'none';
+  document.getElementById('login-step').style.display = 'block';
+  document.getElementById('grant').style.display = 'none';
+}}
+function showLoginError(message) {{
+  showLoginStep();
+  const box = document.getElementById('login-error');
+  box.textContent = message;
+  box.style.display = 'block';
+  resetLoginCheck();
+}}
+function showVerified(message) {{
+  document.getElementById('initial').style.display = 'none';
+  document.getElementById('login-step').style.display = 'none';
   document.getElementById('grant').style.display = 'block';
+  document.getElementById('verified-message').textContent = message;
 }}
 </script>
 </head>
@@ -181,12 +234,29 @@ function showGrant() {{
 <button class=\"secondary\" onclick=\"cancel()\">Cancelar</button>
 </div>
 </section>
-<section id=\"grant\">
-<h1>Concluir autorização da conta</h1>
-<p>Faça login na conta desejada na outra aba. Quando a página normal do ChatGPT estiver aberta, volte aqui.</p>
+<section id=\"login-step\">
+<h1>1. Faça login na aba do ChatGPT</h1>
+<ol class=\"steps\">
+<li>Vá para a aba <strong>ChatGPT</strong> que acabou de ser aberta.</li>
+<li>Conclua todo o login, MFA/OTP e eventuais confirmações da sua conta.</li>
+<li>Espere até enxergar a interface normal do ChatGPT.</li>
+<li>Só então volte a esta aba e clique em <strong>Já concluí o login — validar conta</strong>.</li>
+</ol>
 <div class=\"notice\">
-Ao clicar em <strong>Conceder acesso à conta</strong>, você autoriza o PowerPack a reutilizar somente este perfil isolado para reviews Web e seleção de Projects acessíveis por esta conta.
+<strong>Importante:</strong> este botão não concede acesso. Ele apenas pede ao PowerPack para verificar se a aba do ChatGPT realmente saiu do fluxo de autenticação. A concessão final aparece somente depois dessa verificação.
 </div>
+<div id=\"login-error\" class=\"notice error\" style=\"display:none\"></div>
+<div class=\"actions\">
+<button class=\"primary\" onclick=\"requestLoginCheck()\">Já concluí o login — validar conta</button>
+<button class=\"secondary\" onclick=\"cancel()\">Cancelar</button>
+</div>
+</section>
+<section id=\"grant\">
+<h1>2. Conta validada</h1>
+<div class=\"notice success\">
+<strong id=\"verified-message\">A aba do ChatGPT foi validada.</strong>
+</div>
+<p>Agora você pode conceder ao PowerPack permissão para reutilizar <strong>somente este perfil isolado</strong> em reviews Web e na descoberta/seleção de Projects acessíveis por esta conta.</p>
 <div class=\"actions\">
 <button class=\"primary\" onclick=\"grant()\">Conceder acesso à conta</button>
 <button class=\"secondary\" onclick=\"cancel()\">Cancelar</button>
@@ -200,6 +270,13 @@ Ao clicar em <strong>Conceder acesso à conta</strong>, você autoriza o PowerPa
 def consent_html(*, profile: str, project_alias: str, project_url: str, profile_dir: Path) -> str:
     """Legacy project-scoped consent page retained for compatibility."""
     return account_consent_html(profile=profile, account_label=f"{project_alias}: {project_url}", profile_dir=profile_dir)
+
+
+def _page_visible_text(page) -> str:
+    try:
+        return page.locator("body").inner_text(timeout=3000)
+    except Exception:
+        return ""
 
 
 def authorize_chatgpt_account(
@@ -230,16 +307,46 @@ def authorize_chatgpt_account(
 
                 chatgpt = context.new_page()
                 chatgpt.goto("https://chatgpt.com/", wait_until="domcontentloaded")
-                consent.evaluate("showGrant()")
-                consent.bring_to_front()
+                # Keep ChatGPT in the foreground. The consent tab waits until the user returns
+                # and explicitly asks PowerPack to validate that login is complete.
+                chatgpt.bring_to_front()
+
+                while True:
+                    consent.wait_for_function("window.__powerpackLoginCheck !== null", timeout=0)
+                    login_decision = consent.evaluate("window.__powerpackLoginCheck")
+                    if login_decision == "cancel":
+                        return AccountAuthorizationResult(False, profile, platform, str(profile_dir), account_label)
+                    if login_decision != "check":
+                        consent.evaluate("resetLoginCheck()")
+                        continue
+
+                    if not chatgpt_login_verified(chatgpt.url, _page_visible_text(chatgpt)):
+                        consent.evaluate(
+                            "message => showLoginError(message)",
+                            "Login ainda não foi confirmado. Volte à aba do ChatGPT, conclua autenticação/MFA e espere a interface normal carregar antes de validar novamente.",
+                        )
+                        consent.bring_to_front()
+                        continue
+
+                    consent.evaluate(
+                        "message => showVerified(message)",
+                        "Login confirmado na aba do ChatGPT. A concessão abaixo autoriza apenas o perfil Playwright isolado atual.",
+                    )
+                    consent.bring_to_front()
+                    break
+
                 consent.wait_for_function("window.__powerpackGrant !== null", timeout=0)
                 if consent.evaluate("window.__powerpackGrant") != "grant":
                     return AccountAuthorizationResult(False, profile, platform, str(profile_dir), account_label)
-                if not is_chatgpt_url(chatgpt.url):
+
+                # Re-check immediately before persisting the grant so a stale/changed tab
+                # cannot satisfy account authorization accidentally.
+                if not chatgpt_login_verified(chatgpt.url, _page_visible_text(chatgpt)):
                     raise RuntimeError(
-                        "ChatGPT account authorization was not recorded because the browser did not finish on chatgpt.com. "
-                        "Complete login in the ChatGPT tab and authorize again."
+                        "ChatGPT account authorization was not recorded because the ChatGPT tab no longer appears authenticated. "
+                        "Complete login in the ChatGPT tab and run authorization again."
                     )
+
                 return AccountAuthorizationResult(
                     True,
                     profile,
