@@ -28,6 +28,60 @@ def ensure_playwright_browser() -> None:
         ) from exc
 
 
+def review_readiness(project: Path) -> dict[str, bool]:
+    review_path = project / ".specify" / "powerpack" / "review.json"
+    if not review_path.is_file():
+        return {
+            "web-review-required": False,
+            "playwright-package": core.playwright_package_ready(),
+            "playwright-browser": playwright_browser_ready(),
+            "chatgpt-authenticated": False,
+            "chatgpt-project-bound": False,
+        }
+    try:
+        review = json.loads(review_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        review = {}
+    web = review.get("chatgpt_web", {}) if isinstance(review, dict) else {}
+    current = core.platform_key()
+    profile = web.get("profile") if isinstance(web, dict) else None
+    alias = web.get("project_alias") if isinstance(web, dict) else None
+    url = web.get("project_url") if isinstance(web, dict) else None
+
+    _, global_data = core.global_config()
+    authenticated = global_data.get("authenticated_profiles", {}).get(current, {})
+    authorization = global_data.get("authorizations", {}).get(current, {}).get(profile) if profile else None
+    auth_ok = bool(
+        profile
+        and authenticated.get(profile, {}).get("source") == "playwright-consent"
+        and isinstance(authorization, dict)
+        and authorization.get("scope") == "chatgpt-web-review"
+        and authorization.get("project_alias") == alias
+        and authorization.get("project_url") == url
+        and core.profile_dir(profile, create=False).is_dir()
+    )
+
+    registered = global_data.get("projects", {}).get(alias) if alias else None
+    binding = registered.get("bindings", {}).get(current) if isinstance(registered, dict) else None
+    project_ok = bool(
+        alias
+        and profile
+        and url
+        and web.get("authorization") == "playwright-consent"
+        and isinstance(binding, dict)
+        and binding.get("profile") == profile
+        and binding.get("url") == url
+        and binding.get("authorization") == "playwright-consent"
+    )
+    return {
+        "web-review-required": bool(web.get("required") and web.get("enabled")) if isinstance(web, dict) else False,
+        "playwright-package": core.playwright_package_ready(),
+        "playwright-browser": playwright_browser_ready(),
+        "chatgpt-authenticated": auth_ok,
+        "chatgpt-project-bound": project_ok,
+    }
+
+
 def print_review_setup_status(project: Path) -> None:
     readiness = core.review_readiness(project)
     if all(readiness.values()):
@@ -156,11 +210,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _patch_core_runtime() -> None:
-    # Keep existing command implementations while replacing only browser readiness/setup.
-    # This removes the old sync_playwright() readiness probe that could leave pending
-    # connection tasks under Python 3.13.
+    # Keep existing command implementations while replacing browser readiness/setup
+    # and authorization-aware readiness. This removes the old sync_playwright()
+    # readiness probe that could leave pending connection tasks under Python 3.13.
     core.playwright_browser_ready = playwright_browser_ready
     core.ensure_playwright_browser = ensure_playwright_browser
+    core.review_readiness = review_readiness
     core.print_review_setup_status = print_review_setup_status
     core.cmd_review_setup = cmd_review_setup
 
