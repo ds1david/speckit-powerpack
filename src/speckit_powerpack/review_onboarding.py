@@ -9,6 +9,7 @@ from pathlib import Path
 import subprocess
 import sys
 from typing import Callable
+from urllib.parse import urlparse
 
 
 @dataclass(frozen=True)
@@ -83,6 +84,18 @@ def ensure_chromium(
     )
 
 
+def same_chatgpt_project(actual_url: str, requested_url: str) -> bool:
+    actual = urlparse(actual_url)
+    requested = urlparse(requested_url)
+    return (
+        actual.scheme == "https"
+        and requested.scheme == "https"
+        and actual.hostname in {"chatgpt.com", "www.chatgpt.com"}
+        and requested.hostname in {"chatgpt.com", "www.chatgpt.com"}
+        and actual.path.rstrip("/") == requested.path.rstrip("/")
+    )
+
+
 def consent_html(*, profile: str, project_alias: str, project_url: str, profile_dir: Path) -> str:
     profile_text = escape(profile)
     alias_text = escape(project_alias)
@@ -144,7 +157,7 @@ function showGrant() {{
 <h1>Concluir autorização</h1>
 <p>O projeto foi aberto em outra aba. Faça login no ChatGPT, confirme que o projeto correto abriu e volte a esta aba.</p>
 <div class=\"notice\">
-Ao clicar em <strong>Conceder acesso ao projeto</strong>, você confirma que o PowerPack pode reutilizar este perfil isolado nas revisões futuras deste projeto.
+Ao clicar em <strong>Conceder acesso ao projeto</strong>, você confirma que o PowerPack pode reutilizar este perfil isolado nas revisões futuras deste projeto. O grant só será persistido se a aba do ChatGPT estiver no Project solicitado.
 </div>
 <div class=\"actions\">
 <button class=\"primary\" onclick=\"grant()\">Conceder acesso ao projeto</button>
@@ -173,8 +186,6 @@ def authorize_chatgpt_project(
     except ImportError as exc:
         raise RuntimeError("Playwright is not installed in the PowerPack environment") from exc
 
-    granted = False
-    granted_at: str | None = None
     try:
         with sync_playwright() as p:
             context = p.chromium.launch_persistent_context(str(profile_dir), headless=False)
@@ -201,11 +212,20 @@ def authorize_chatgpt_project(
                 consent.bring_to_front()
                 consent.wait_for_function("window.__powerpackGrant !== null", timeout=0)
                 final_decision = consent.evaluate("window.__powerpackGrant")
-                if final_decision == "grant":
-                    granted = True
-                    granted_at = utc_now()
+                if final_decision != "grant":
+                    return ReviewAuthorizationResult(
+                        False, profile, project_alias, project_url, platform, str(profile_dir)
+                    )
+
+                if not same_chatgpt_project(chatgpt.url, project_url):
+                    raise RuntimeError(
+                        "ChatGPT Project authorization was not recorded because the browser is not on the requested Project URL. "
+                        "Complete login/access in the ChatGPT tab, confirm the requested Project opens, and run authorization again."
+                    )
+
+                granted_at = utc_now()
                 return ReviewAuthorizationResult(
-                    granted,
+                    True,
                     profile,
                     project_alias,
                     project_url,
