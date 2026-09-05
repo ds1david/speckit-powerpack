@@ -35,8 +35,8 @@ provides:
       strategy: "replace"
     - type: "command"
       name: "speckit.implement-review"
-      file: "commands/speckit.implement-review.md"
-      description: "Executor-aware independent implementation review with findings-to-tasks convergence."
+      file: "commands/speckit.implement-review-v2.md"
+      description: "Executor-aware, capability-driven independent implementation review with findings-to-tasks convergence."
       strategy: "replace"
 
-tags: ["sdd", "workflow", "quality", "review"]
+tags: ["sdd", "workflow", "quality", "review", "portable"]
