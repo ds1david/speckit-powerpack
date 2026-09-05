@@ -102,3 +102,35 @@ def test_previous_round_requires_exact_finding_ids_and_resolution():
 def test_changes_required_needs_finding_and_findings_front():
     review = valid_review(verdict="CHANGES_REQUIRED", findings=[finding()])
     assert protocol.validate_review(review) == []
+
+
+def test_resolved_material_finding_reappearing_is_blocked():
+    previous = valid_review(verdict="CHANGES_REQUIRED", findings=[finding("R001-001")])
+    current = valid_review(
+        verdict="CHANGES_REQUIRED",
+        findings=[finding("R002-001")],
+        previous_findings=[{"id": "R001-001", "status": "RESOLVED", "evidence": ["claimed fixed"]}],
+    )
+    errors = protocol.validate_review(current, previous)
+    assert any(error.startswith(protocol.REPEATED_PREFIX) for error in errors)
+    assert protocol.classify_errors(errors) == "BLOCKED_REPEATED_FINDING"
+
+
+def test_not_resolved_finding_can_remain_without_repeated_resolution_block():
+    previous = valid_review(verdict="CHANGES_REQUIRED", findings=[finding("R001-001")])
+    current = valid_review(
+        verdict="CHANGES_REQUIRED",
+        findings=[finding("R002-001")],
+        previous_findings=[{"id": "R001-001", "status": "NOT_RESOLVED", "evidence": ["still open"]}],
+    )
+    errors = protocol.validate_review(current, previous)
+    assert not any(error.startswith(protocol.REPEATED_PREFIX) for error in errors)
+
+
+def test_snapshot_identity_requires_full_hashes():
+    review = valid_review()
+    review["review_context"]["head_sha"] = "deadbeef"
+    review["review_context"]["snapshot_sha256"] = "abcd"
+    errors = protocol.validate_review(review)
+    assert any("head_sha must be a full 40-character Git SHA" in error for error in errors)
+    assert any("snapshot_sha256 must be a 64-character" in error for error in errors)
