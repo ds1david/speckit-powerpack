@@ -104,7 +104,7 @@ def test_incompatible_existing_spec_kit_blocks_without_bootstrap(monkeypatch):
         raise AssertionError("incompatible Spec Kit should block")
 
 
-def test_mandatory_web_review_policy_migrates_existing_config(tmp_path: Path):
+def test_mandatory_web_review_policy_migrates_existing_config_without_faking_consent(tmp_path: Path):
     path = tmp_path / "review.json"
     path.write_text('{"chatgpt_web":{"enabled":false,"project_alias":"existing"}}', encoding="utf-8")
     cli.enforce_mandatory_web_review(path)
@@ -112,3 +112,4 @@ def test_mandatory_web_review_policy_migrates_existing_config(tmp_path: Path):
     assert data["chatgpt_web"]["required"] is True
     assert data["chatgpt_web"]["enabled"] is True
     assert data["chatgpt_web"]["project_alias"] == "existing"
+    assert data["chatgpt_web"]["authorization"] is None
