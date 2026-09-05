@@ -1,0 +1,37 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "speckit-powerpack"
+version = "0.1.0.dev0"
+description = "Draft enhanced distribution layer for GitHub Spec Kit with portable workflow gates, model routing, and review tooling."
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+authors = [{name = "David Oliveira"}]
+keywords = ["spec-kit", "sdd", "claude-code", "codex", "ai", "code-review"]
+dependencies = [
+  "playwright>=1.55,<2",
+]
+
+[project.urls]
+Homepage = "https://github.com/ds1david/speckit-powerpack"
+Repository = "https://github.com/ds1david/speckit-powerpack"
+Issues = "https://github.com/ds1david/speckit-powerpack/issues"
+
+[project.scripts]
+speckit-powerpack = "speckit_powerpack.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+speckit_powerpack = ["assets/**/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
