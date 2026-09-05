@@ -85,8 +85,7 @@ def enabled_phases(cfg: dict[str, Any]) -> list[str]:
     phases = cfg.get("phases", {}) if isinstance(cfg.get("phases"), dict) else {}
     result: list[str] = []
     for phase in PHASE_ORDER:
-        value = phases.get(phase, True)
-        if value is False:
+        if phases.get(phase, True) is False:
             continue
         result.append(phase)
     return result
@@ -181,15 +180,30 @@ def cmd_advance(args: argparse.Namespace) -> int:
         return 10
 
     phases = list(state.get("enabled_phases") or [])
-    if current == "converge":
+
+    if current == "checklist" and outcome == "skipped":
+        # If checklist itself is genuinely N/A, checklist-converge cannot have
+        # a valid predecessor and must be skipped as part of the same decision.
+        candidate = next_sequential(phases, current)
+        if candidate == "checklist_converge":
+            state.setdefault("history", []).append({
+                "phase": "checklist_converge",
+                "outcome": "skipped",
+                "evidence": "checklist not applicable; predecessor intentionally absent",
+                "at": now(),
+            })
+            state["current_phase"] = next_sequential(phases, "checklist_converge")
+        else:
+            state["current_phase"] = candidate
+    elif current == "converge":
+        state["convergence_round"] = int(state.get("convergence_round", 0)) + 1
+        if state["convergence_round"] > int(state.get("max_convergence_rounds", 5)):
+            state["status"] = "BLOCKED"
+            state["blocked_reason"] = "max-convergence-rounds-exceeded"
+            write_state(state_path(root, feature), state)
+            print(json.dumps(state, ensure_ascii=False, indent=2))
+            return 11
         if outcome == "needs-implementation":
-            state["convergence_round"] = int(state.get("convergence_round", 0)) + 1
-            if state["convergence_round"] > int(state.get("max_convergence_rounds", 5)):
-                state["status"] = "BLOCKED"
-                state["blocked_reason"] = "max-convergence-rounds-exceeded"
-                write_state(state_path(root, feature), state)
-                print(json.dumps(state, ensure_ascii=False, indent=2))
-                return 11
             state["return_after_implement"] = "converge"
             state["current_phase"] = "implement"
         elif outcome in {"converged", "completed"}:
@@ -198,14 +212,14 @@ def cmd_advance(args: argparse.Namespace) -> int:
             print(json.dumps({"status": "BLOCKED", "reason": "invalid-converge-outcome", "outcome": outcome}))
             return 9
     elif current == "implement_review":
+        state["review_round"] = int(state.get("review_round", 0)) + 1
+        if state["review_round"] > int(state.get("max_review_rounds", 5)):
+            state["status"] = "BLOCKED"
+            state["blocked_reason"] = "max-review-rounds-exceeded"
+            write_state(state_path(root, feature), state)
+            print(json.dumps(state, ensure_ascii=False, indent=2))
+            return 12
         if outcome == "findings":
-            state["review_round"] = int(state.get("review_round", 0)) + 1
-            if state["review_round"] > int(state.get("max_review_rounds", 5)):
-                state["status"] = "BLOCKED"
-                state["blocked_reason"] = "max-review-rounds-exceeded"
-                write_state(state_path(root, feature), state)
-                print(json.dumps(state, ensure_ascii=False, indent=2))
-                return 12
             state["return_after_implement"] = "implement_review"
             state["current_phase"] = "implement"
         elif outcome in {"approved", "completed"}:
