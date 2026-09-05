@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "enabled": true,
+  "auto_check_on_install": true,
+  "confirmation_required": true,
+  "repository": null,
+  "ref": null,
+  "project_refresh": true,
+  "force": {
+    "allow": true,
+    "overwrite_managed_assets": true,
+    "overwrite_project_config": false,
+    "destructive_git_operations": false
+  }
+}

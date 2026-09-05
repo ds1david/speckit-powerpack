@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "active_integration": "claude",
+  "stages": {
+    "implement": "coding",
+    "converge": "reasoning",
+    "checklist-converge": "reasoning",
+    "implement-review": "reviewer",
+    "full-cycle": "reasoning",
+    "debt-create": "reasoning",
+    "debt-list": "economical",
+    "debt-consult": "economical",
+    "debt-start": "reasoning",
+    "debt-close": "reasoning",
+    "powerpack-update": "economical"
+  },
+  "reviewer_contract": {
+    "codex": {
+      "model": "gpt-5.6-sol",
+      "reasoning_effort": "xhigh",
+      "sandbox": "read-only"
+    }
+  },
+  "integrations": {
+    "claude": {
+      "economical": "haiku",
+      "coding": "sonnet",
+      "reasoning": "opus",
+      "reviewer": "external-codex"
+    },
+    "codex": {
+      "economical": "luna",
+      "coding": "sol",
+      "reasoning": "tera",
+      "reviewer": "local-session"
+    }
+  }
+}

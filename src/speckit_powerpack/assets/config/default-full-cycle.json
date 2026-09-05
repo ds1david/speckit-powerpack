@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "mode": "interactive",
+  "phases": {
+    "clarify": true,
+    "plan": true,
+    "checklist": "when-applicable",
+    "checklist_converge": true,
+    "tasks": true,
+    "analyze": true,
+    "implement": true,
+    "converge": true,
+    "implement_review": true
+  },
+  "limits": {
+    "max_convergence_rounds": 5,
+    "max_review_rounds": 5
+  },
+  "behavior": {
+    "same_spec_only": true,
+    "stop_on_blocked": true,
+    "auto_select_review_findings_in_auto_mode": true,
+    "allow_debt_escape_hatch": false
+  }
+}

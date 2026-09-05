@@ -1,0 +1,32 @@
+{
+  "schema_version": 2,
+  "mode": "interactive",
+  "conversation_strategy": "one-per-pr",
+  "deep_review": {
+    "schema_version": "2.0",
+    "protocol_path": ".specify/powerpack/deep-review-protocol.md",
+    "validate_output": true,
+    "full_snapshot_each_round": true,
+    "validate_previous_findings": true,
+    "adversarial_verdict_challenge": true
+  },
+  "codex": {
+    "model": "gpt-5.6-sol",
+    "reasoning_effort": "xhigh",
+    "sandbox": "read-only"
+  },
+  "chatgpt_web": {
+    "enabled": false,
+    "mode": "assisted",
+    "project_alias": null,
+    "project_url": null,
+    "headless": false,
+    "profile": null,
+    "profile_scope": "platform",
+    "profile_platform": null
+  },
+  "quality_gate": {
+    "mode": "auto-detect",
+    "skip_documentation_only": true
+  }
+}
