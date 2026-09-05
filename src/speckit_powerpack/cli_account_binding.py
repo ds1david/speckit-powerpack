@@ -16,11 +16,13 @@ from .review_onboarding import (
     discover_chatgpt_projects,
     is_chatgpt_project_url,
     open_link_and_capture_project,
+    select_chatgpt_project_interactively,
 )
 
 
 ACCOUNT_AUTH_SOURCE = "playwright-account-consent"
 PROJECT_BINDING_AUTH = "playwright-account-consent"
+STALE_BINDING_AUTH = "stale-account-reauth"
 
 
 def _subparsers(parser: argparse.ArgumentParser) -> argparse._SubParsersAction:
@@ -75,6 +77,45 @@ def _binding_for(registered: dict[str, Any], platform: str, profile: str | None)
     if profile and profile in bindings:
         return bindings[profile]
     return None
+
+
+def _invalidate_profile_bindings(data: dict[str, Any], platform: str, profile: str) -> list[str]:
+    invalidated: list[str] = []
+    for alias, registered in data.setdefault("projects", {}).items():
+        if not isinstance(registered, dict):
+            continue
+        raw = registered.setdefault("bindings", {}).get(platform)
+        if not isinstance(raw, dict):
+            continue
+        if "url" in raw and raw.get("profile") == profile:
+            raw["authorization"] = STALE_BINDING_AUTH
+            invalidated.append(str(alias))
+            continue
+        binding = raw.get(profile)
+        if isinstance(binding, dict):
+            binding["authorization"] = STALE_BINDING_AUTH
+            invalidated.append(str(alias))
+    return invalidated
+
+
+def _remove_profile_bindings(data: dict[str, Any], platform: str, profile: str) -> list[str]:
+    removed: list[str] = []
+    for alias, registered in data.setdefault("projects", {}).items():
+        if not isinstance(registered, dict):
+            continue
+        raw = registered.setdefault("bindings", {}).get(platform)
+        if not isinstance(raw, dict):
+            continue
+        if "url" in raw and raw.get("profile") == profile:
+            registered["bindings"].pop(platform, None)
+            removed.append(str(alias))
+            continue
+        if profile in raw:
+            raw.pop(profile, None)
+            removed.append(str(alias))
+        if not raw:
+            registered["bindings"].pop(platform, None)
+    return removed
 
 
 def review_readiness(project: Path) -> dict[str, bool]:
@@ -136,9 +177,10 @@ def print_review_setup_status(project: Path) -> None:
     print("Use 'speckit-powerpack doctor --strict-review' when you need a failing readiness gate.\n")
 
 
-def _persist_account(result: AccountAuthorizationResult) -> None:
+def _persist_account(result: AccountAuthorizationResult) -> list[str]:
     path, data = core.global_config()
     platform = result.platform
+    invalidated = _invalidate_profile_bindings(data, platform, result.profile)
     data["schema_version"] = max(3, int(data.get("schema_version", 0) or 0))
     data.setdefault("active_profiles", {})[platform] = result.profile
     data.setdefault("accounts", {}).setdefault(platform, {})[result.profile] = {
@@ -154,6 +196,7 @@ def _persist_account(result: AccountAuthorizationResult) -> None:
         "granted_at": result.granted_at,
     }
     core.save_global(path, data)
+    return invalidated
 
 
 def cmd_auth_authorize(args: argparse.Namespace) -> None:
@@ -170,9 +213,11 @@ def cmd_auth_authorize(args: argparse.Namespace) -> None:
         raise core.PowerPackError(str(exc)) from exc
     if not result.granted:
         raise core.PowerPackError("ChatGPT account authorization was cancelled; no account grant was recorded.")
-    _persist_account(result)
+    invalidated = _persist_account(result)
     print(f"Authorized ChatGPT account profile '{args.profile}' ({result.account_label or args.profile}).")
     print(f"Isolated profile storage: {result.profile_dir}")
+    if invalidated:
+        print("Existing Project bindings for this profile were marked stale and must be re-verified: " + ", ".join(sorted(set(invalidated))))
     print("This profile may now discover/bind any ChatGPT Project accessible to this authenticated account.")
 
 
@@ -197,7 +242,8 @@ def cmd_auth_use(args: argparse.Namespace) -> None:
         raise core.PowerPackError(f"Profile '{args.profile}' is not an authorized ChatGPT account on {current}.")
     data.setdefault("active_profiles", {})[current] = args.profile
     core.save_global(path, data)
-    print(f"Active ChatGPT reviewer account profile is now '{args.profile}' on {current}.")
+    print(f"Active ChatGPT account profile is now '{args.profile}' on {current}.")
+    print("The repository's Web reviewer identity changes only after project use/select/add with that profile.")
 
 
 def cmd_auth_reconfigure(args: argparse.Namespace) -> None:
@@ -205,12 +251,53 @@ def cmd_auth_reconfigure(args: argparse.Namespace) -> None:
         profile_path = core.profile_dir(args.profile, create=False)
         if profile_path.exists():
             shutil.rmtree(profile_path)
-        path, data = core.global_config()
-        current = core.platform_key()
-        data.setdefault("accounts", {}).setdefault(current, {}).pop(args.profile, None)
-        data.setdefault("authenticated_profiles", {}).setdefault(current, {}).pop(args.profile, None)
-        core.save_global(path, data)
     cmd_auth_authorize(args)
+
+
+def cmd_auth_logout(args: argparse.Namespace) -> None:
+    core.browser_action(args.profile, "https://chatgpt.com/", "ChatGPT account logout")
+    path, data = core.global_config()
+    current = core.platform_key()
+    invalidated = _invalidate_profile_bindings(data, current, args.profile)
+    data.setdefault("accounts", {}).setdefault(current, {}).pop(args.profile, None)
+    data.setdefault("authenticated_profiles", {}).setdefault(current, {}).pop(args.profile, None)
+    if data.setdefault("active_profiles", {}).get(current) == args.profile:
+        data["active_profiles"].pop(current, None)
+    core.save_global(path, data)
+    print(f"Logged out/inactivated PowerPack ChatGPT profile '{args.profile}'.")
+    if invalidated:
+        print("Project bindings marked stale: " + ", ".join(sorted(set(invalidated))))
+
+
+def cmd_auth_forget(args: argparse.Namespace) -> None:
+    current = core.platform_key()
+    profile_path = core.profile_dir(args.profile, create=False)
+    if profile_path.exists():
+        shutil.rmtree(profile_path)
+    cfg_path, data = core.global_config()
+    removed = _remove_profile_bindings(data, current, args.profile)
+    data.setdefault("accounts", {}).setdefault(current, {}).pop(args.profile, None)
+    data.setdefault("authenticated_profiles", {}).setdefault(current, {}).pop(args.profile, None)
+    data.setdefault("authorizations", {}).setdefault(current, {}).pop(args.profile, None)
+    if data.setdefault("active_profiles", {}).get(current) == args.profile:
+        data["active_profiles"].pop(current, None)
+    core.save_global(cfg_path, data)
+    if getattr(args, "path", None):
+        project = Path(args.path).resolve()
+        try:
+            review_path, review = _review_config(project)
+        except core.PowerPackError:
+            review_path = None
+            review = {}
+        web = review.get("chatgpt_web", {}) if isinstance(review, dict) else {}
+        if isinstance(web, dict) and web.get("profile") == args.profile:
+            for key in ("project_alias", "project_url", "project_name", "profile", "account_label", "profile_platform", "authorization"):
+                web[key] = None
+            if review_path:
+                core.write_json(review_path, review, overwrite=True)
+    print(f"Forgot isolated PowerPack ChatGPT profile '{args.profile}'.")
+    if removed:
+        print("Removed Project bindings: " + ", ".join(sorted(set(removed))))
 
 
 def _profile_for(args: argparse.Namespace) -> str:
@@ -260,6 +347,7 @@ def _persist_binding(*, alias: str, candidate: ProjectCandidate, profile: str, p
         "account_label": account.get("account_label") or profile,
         "authorization": PROJECT_BINDING_AUTH,
     }
+    data.setdefault("active_profiles", {})[current] = profile
     core.save_global(cfg_path, data)
 
     review_path, review = _review_config(project_path)
@@ -289,12 +377,20 @@ def _discover(profile: str) -> list[ProjectCandidate]:
         raise core.PowerPackError(str(exc)) from exc
 
 
+def _manual_project(profile: str) -> ProjectCandidate:
+    _require_authorized_profile(profile)
+    try:
+        return select_chatgpt_project_interactively(profile_dir=core.profile_dir(profile))
+    except RuntimeError as exc:
+        raise core.PowerPackError(str(exc)) from exc
+
+
 def cmd_project_discover(args: argparse.Namespace) -> None:
     profile = _profile_for(args)
     projects = _discover(profile)
     if not projects:
         print("No Project links were discovered in the currently loaded ChatGPT sidebar for this account.")
-        print("Use 'project add' for a known Project URL or 'project accept-invite' for a shared/invite link.")
+        print("Use 'project select --manual', 'project add', or 'project accept-invite'.")
         return
     for index, item in enumerate(projects, start=1):
         print(f"{index:2}. {item.name} | {item.url}")
@@ -317,7 +413,11 @@ def _choose_project(projects: list[ProjectCandidate], index: int | None) -> Proj
 
 def cmd_project_select(args: argparse.Namespace) -> None:
     profile = _profile_for(args)
-    candidate = _choose_project(_discover(profile), args.index)
+    if args.manual:
+        candidate = _manual_project(profile)
+    else:
+        projects = _discover(profile)
+        candidate = _choose_project(projects, args.index) if projects else _manual_project(profile)
     alias = args.alias or _local_alias(candidate.name, candidate.url)
     _persist_binding(alias=alias, candidate=candidate, profile=profile, project_path=Path(args.path).resolve())
 
@@ -387,7 +487,7 @@ def cmd_project_use(args: argparse.Namespace) -> None:
     profile, binding = _select_binding(registered, current, getattr(args, "profile", None))
     _require_authorized_profile(profile)
     if binding.get("authorization") != PROJECT_BINDING_AUTH:
-        raise core.PowerPackError("This Project has only a legacy binding; re-select/add it with an authorized account profile.")
+        raise core.PowerPackError("This Project binding is stale/legacy; re-select/add it with the desired authorized account profile.")
     candidate = ProjectCandidate(name=registered.get("display_name") or args.alias, url=binding["url"])
     _persist_binding(alias=args.alias, candidate=candidate, profile=profile, project_path=project)
 
@@ -404,7 +504,8 @@ def cmd_project_list(args: argparse.Namespace) -> None:
             for profile, binding in sorted(_platform_bindings(project, platform_name).items()):
                 print(
                     f"{alias}: name={project.get('display_name') or alias} platform={platform_name} "
-                    f"profile={profile} account={binding.get('account_label')} url={binding.get('url')}"
+                    f"profile={profile} account={binding.get('account_label')} "
+                    f"authorization={binding.get('authorization')} url={binding.get('url')}"
                 )
 
 
@@ -412,6 +513,13 @@ def cmd_legacy_authorize_deprecated(args: argparse.Namespace) -> None:
     raise core.PowerPackError(
         "Project-scoped 'review authorize' is deprecated. Authorize the ChatGPT account first with "
         "'review auth authorize <profile>', then use 'review project select/add/accept-invite'."
+    )
+
+
+def cmd_legacy_project_bind_deprecated(args: argparse.Namespace) -> None:
+    raise core.PowerPackError(
+        "Legacy 'review project bind' is deprecated. Use 'review project select', 'project add', or 'project accept-invite' "
+        "with an authorized account profile."
     )
 
 
@@ -477,8 +585,12 @@ def build_parser() -> argparse.ArgumentParser:
     p = asub.add_parser("reconfigure")
     p.add_argument("profile")
     p.add_argument("--account-label")
-    p.add_argument("--fresh", action="store_true", help="Delete only this PowerPack profile session before authorizing again")
+    p.add_argument("--fresh", action="store_true", help="Delete only this isolated PowerPack session before authorizing again")
     p.set_defaults(func=cmd_auth_reconfigure)
+    asub.choices["logout"].set_defaults(func=cmd_auth_logout)
+    forget_parser = asub.choices["forget"]
+    forget_parser.add_argument("--path", default=".")
+    forget_parser.set_defaults(func=cmd_auth_forget)
 
     project = rsub.choices["project"]
     psub = _subparsers(project)
@@ -488,6 +600,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = psub.add_parser("select", help="Discover and bind one accessible ChatGPT Project")
     p.add_argument("--profile")
     p.add_argument("--index", type=int)
+    p.add_argument("--manual", action="store_true", help="Choose by navigating to a Project in the Playwright browser")
     p.add_argument("--alias")
     p.add_argument("--path", default=".")
     p.set_defaults(func=cmd_project_select)
@@ -504,6 +617,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--path", default=".")
     p.set_defaults(func=cmd_project_accept_invite)
 
+    psub.choices["bind"].set_defaults(func=cmd_legacy_project_bind_deprecated)
     psub.choices["list"].set_defaults(func=cmd_project_list)
     use_parser = psub.choices["use"]
     use_parser.add_argument("--profile")
