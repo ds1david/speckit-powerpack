@@ -47,11 +47,19 @@ def test_update_command_and_policy_are_packaged():
 def test_review_defaults_require_platform_scoped_web_profiles():
     review = json.loads((ASSETS / "config" / "default-review.json").read_text(encoding="utf-8"))
     assert review["schema_version"] == 2
+    assert review["chatgpt_web"]["required"] is True
+    assert review["chatgpt_web"]["enabled"] is True
     assert review["chatgpt_web"]["profile_scope"] == "platform"
+    assert review["chatgpt_web"]["headless"] is False
     assert review["deep_review"]["schema_version"] == "2.0"
     assert review["deep_review"]["validate_previous_findings"] is True
     assert review["deep_review"]["full_snapshot_each_round"] is True
     assert review["deep_review"]["adversarial_verdict_challenge"] is True
+
+
+def test_playwright_is_a_core_runtime_dependency():
+    pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    assert 'dependencies = ["playwright>=1.55,<2"]' in pyproject
 
 
 def test_deep_review_protocol_and_validator_are_packaged():
