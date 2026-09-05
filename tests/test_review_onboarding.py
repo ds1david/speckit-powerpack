@@ -7,8 +7,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
-from speckit_powerpack import cli as core
-from speckit_powerpack import cli_entry
+from speckit_powerpack import cli
 from speckit_powerpack import review_onboarding as onboarding
 
 
@@ -64,7 +63,7 @@ def test_browser_receipt_becomes_stale_when_playwright_version_changes(tmp_path:
 
 
 def test_cli_registers_single_command_authorization_flow():
-    args = cli_entry.build_parser().parse_args([
+    args = cli.build_parser().parse_args([
         "review",
         "authorize",
         "--profile", "atsel",
@@ -72,17 +71,17 @@ def test_cli_registers_single_command_authorization_flow():
         "--url", "https://chatgpt.com/g/g-p-demo/project",
         "--path", ".",
     ])
-    assert args.func is cli_entry.cmd_review_authorize
+    assert args.func is cli.cmd_review_authorize
     assert args.profile == "atsel"
     assert args.project == "atsel"
 
 
 def test_browser_readiness_does_not_start_playwright_connection(tmp_path: Path, monkeypatch):
-    monkeypatch.setattr(core, "playwright_package_ready", lambda: True)
-    monkeypatch.setattr(core, "global_root", lambda: tmp_path)
-    monkeypatch.setattr(core, "platform_key", lambda: "linux")
-    monkeypatch.setattr(cli_entry, "browser_install_ready", lambda root, platform: (root, platform) == (tmp_path, "linux"))
-    assert cli_entry.playwright_browser_ready() is True
+    monkeypatch.setattr(cli, "playwright_package_ready", lambda: True)
+    monkeypatch.setattr(cli, "global_root", lambda: tmp_path)
+    monkeypatch.setattr(cli, "platform_key", lambda: "linux")
+    monkeypatch.setattr(cli, "browser_install_ready", lambda root, platform: (root, platform) == (tmp_path, "linux"))
+    assert cli.playwright_browser_ready() is True
 
 
 def test_authorization_persists_platform_profile_and_project_binding(tmp_path: Path, monkeypatch):
@@ -92,12 +91,12 @@ def test_authorization_persists_platform_profile_and_project_binding(tmp_path: P
     review_path.parent.mkdir(parents=True)
     review_path.write_text(json.dumps({"chatgpt_web": {"required": True, "enabled": True}}), encoding="utf-8")
 
-    monkeypatch.setattr(core, "global_config", lambda: (global_path, {}))
+    monkeypatch.setattr(cli, "global_config", lambda: (global_path, {}))
 
     def save_global(path: Path, data: dict):
         path.write_text(json.dumps(data), encoding="utf-8")
 
-    monkeypatch.setattr(core, "save_global", save_global)
+    monkeypatch.setattr(cli, "save_global", save_global)
 
     result = onboarding.ReviewAuthorizationResult(
         granted=True,
@@ -108,7 +107,7 @@ def test_authorization_persists_platform_profile_and_project_binding(tmp_path: P
         profile_dir="/tmp/powerpack-profile",
         granted_at="2026-09-05T22:00:00+00:00",
     )
-    cli_entry._write_authorized_project(result=result, project_path=project)
+    cli._write_authorized_project(result=result, project_path=project)
 
     global_data = json.loads(global_path.read_text(encoding="utf-8"))
     assert global_data["active_profiles"]["linux"] == "atsel"
@@ -124,3 +123,42 @@ def test_authorization_persists_platform_profile_and_project_binding(tmp_path: P
     assert web["profile"] == "atsel"
     assert web["profile_platform"] == "linux"
     assert web["authorization"] == "playwright-consent"
+
+
+def test_legacy_login_and_binding_do_not_satisfy_mandatory_consent(tmp_path: Path, monkeypatch):
+    project = tmp_path / "project"
+    review_path = project / ".specify" / "powerpack" / "review.json"
+    review_path.parent.mkdir(parents=True)
+    review_path.write_text(json.dumps({
+        "chatgpt_web": {
+            "required": True,
+            "enabled": True,
+            "project_alias": "atsel",
+            "project_url": "https://chatgpt.com/g/g-p-demo/project",
+            "profile": "atsel",
+            "authorization": None,
+        }
+    }), encoding="utf-8")
+    profile_path = tmp_path / "profiles" / "atsel"
+    profile_path.mkdir(parents=True)
+
+    monkeypatch.setattr(cli, "global_root", lambda: tmp_path)
+    monkeypatch.setattr(cli, "platform_key", lambda *args, **kwargs: "linux")
+    monkeypatch.setattr(cli, "profile_dir", lambda name, **kwargs: profile_path)
+    monkeypatch.setattr(cli, "playwright_package_ready", lambda: True)
+    monkeypatch.setattr(cli, "playwright_browser_ready", lambda: True)
+    monkeypatch.setattr(cli, "global_config", lambda: (
+        tmp_path / "config.json",
+        {
+            "authenticated_profiles": {"linux": {"atsel": {"confirmed": True, "source": "legacy-login"}}},
+            "projects": {"atsel": {"bindings": {"linux": {
+                "profile": "atsel",
+                "url": "https://chatgpt.com/g/g-p-demo/project",
+                "authorization": "legacy",
+            }}}},
+        },
+    ))
+
+    readiness = cli.review_readiness(project)
+    assert readiness["chatgpt-authenticated"] is False
+    assert readiness["chatgpt-project-bound"] is False
