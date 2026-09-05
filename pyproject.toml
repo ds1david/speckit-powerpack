@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=75", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "speckit-powerpack"
+version = "0.1.0.dev0"
+description = "Draft distribution layer for GitHub Spec Kit with workflow prerequisites, convergence and independent implementation review."
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+authors = [{name = "David Oliveira"}]
+keywords = ["spec-kit", "sdd", "claude-code", "codex", "code-review"]
+dependencies = []
+
+[project.optional-dependencies]
+review-web = ["playwright>=1.55,<2"]
+dev = ["pytest>=8,<9", "build>=1.2,<2"]
+
+[project.urls]
+Homepage = "https://github.com/ds1david/speckit-powerpack"
+Repository = "https://github.com/ds1david/speckit-powerpack"
+Issues = "https://github.com/ds1david/speckit-powerpack/issues"
+
+[project.scripts]
+speckit-powerpack = "speckit_powerpack.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+speckit_powerpack = ["assets/**/*.json", "assets/**/*.yml", "assets/**/*.md", "assets/runtime/*.py"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
