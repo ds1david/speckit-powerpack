@@ -38,31 +38,51 @@ Platform/build details are resolved only by `.specify/powerpack/bin/capabilities
 
 ## Mandatory PowerPack/Web readiness
 
-Before convergence or review, run:
+Before convergence or review, run the strict readiness gate:
 
 ```bash
-speckit-powerpack doctor
+speckit-powerpack doctor --strict-review
 ```
 
-If it fails, STOP with `BLOCKED_CONFIGURATION`. In particular, do not begin review when the mandatory ChatGPT Project Web gate lacks any of:
+If it fails, STOP with `BLOCKED_CONFIGURATION`. A plain `speckit-powerpack doctor` is diagnostic and may report `SETUP` without treating an otherwise healthy installation as broken; `--strict-review` is the mandatory execution gate for this skill.
+
+Do not begin review when the mandatory ChatGPT Project Web gate lacks any of:
 
 - Playwright/Chromium readiness;
-- explicit `playwright-consent` authorization;
+- an account-scoped `playwright-account-consent` grant;
 - persistent PowerPack browser profile for the current platform;
 - exact Project alias/URL/profile binding;
+- the configured `account_label`/profile identity that will perform the Web review;
 - selected executor availability.
 
-The remediation for missing Web permission is one explicit command:
+The Playwright profile represents the **ChatGPT account identity** performing Web code review. The Project is a separate context binding. A Project may be registered for multiple accounts, but the repository must select exactly one account/profile for the active review.
+
+Typical setup:
 
 ```bash
-speckit-powerpack review authorize \
-  --profile <profile> \
-  --project <alias> \
-  --url 'https://chatgpt.com/g/g-p-.../project' \
-  --path .
+speckit-powerpack review auth authorize <profile> --account-label <account-label>
+speckit-powerpack review project select --profile <profile> --path .
 ```
 
-Never treat legacy `auth login`/`project bind` state without `playwright-consent` as equivalent authorization. Never reuse the default Windows Edge/Chrome user-data directory; the PowerPack Playwright profile is intentionally separate.
+Known/shared Project URL:
+
+```bash
+speckit-powerpack review project add '<project-url>' --profile <profile> --alias <alias> --path .
+```
+
+Invite/shared link:
+
+```bash
+speckit-powerpack review project accept-invite '<invite-or-shared-link>' --profile <profile> --alias <alias> --path .
+```
+
+Switch an already registered Project/account pair:
+
+```bash
+speckit-powerpack review project use <alias> --profile <profile> --path .
+```
+
+Never reuse the default Windows Edge/Chrome user-data directory; PowerPack profiles are intentionally isolated. Reauthorizing/reconfiguring an account profile invalidates its previous Project bindings until those Projects are re-verified.
 
 ## Terminal UX and model routing
 
@@ -199,10 +219,14 @@ Read `.specify/powerpack/review.json` and require:
 ```text
 chatgpt_web.required = true
 chatgpt_web.enabled = true
-chatgpt_web.authorization = playwright-consent
+chatgpt_web.authorization = playwright-account-consent
 chatgpt_web.project_url = configured exact Project URL
-chatgpt_web.profile = configured platform profile
+chatgpt_web.project_alias = configured local Project alias
+chatgpt_web.profile = configured isolated account profile
+chatgpt_web.account_label = configured reviewer-account identity
 ```
+
+The combination `Project + profile/account` is part of the Web review identity. Do not silently substitute another authenticated account even when that account also has access to the same shared Project.
 
 Then start review state with the configured Project URL:
 
@@ -286,7 +310,9 @@ Unknown/ambiguous architectures fail closed unless project configuration defines
 
 Run Web review only after Sol has no findings for the current snapshot. The Web reviewer uses the same evidence protocol and schema `2.0`, but is an independent gate and does not inherit trust from Sol.
 
-Use only the PowerPack-authorized profile and exact Project URL from `.specify/powerpack/review.json`. The profile belongs to the current OS/WSL namespace and is separate from the user's normal Edge/Chrome context.
+Use only the exact `profile`, `account_label`, Project alias and Project URL from `.specify/powerpack/review.json`. The selected profile belongs to the current OS/WSL namespace and is separate from the user's normal Edge/Chrome context.
+
+The authenticated ChatGPT account behind that profile defines the Web reviewer identity. For example, if the same shared Project is registered for an owner profile and a collaborator profile, the binding selected with `review project use <alias> --profile <profile>` is authoritative for that review run.
 
 If Web produces findings:
 
@@ -300,7 +326,7 @@ Web finding
   -> fresh Web review
 ```
 
-Both final approvals must refer to the same final snapshot. Missing Web authorization/project binding is `BLOCKED_CONFIGURATION`, never an acceptable Codex-only completion path.
+Both final approvals must refer to the same final snapshot. Missing/stale account authorization or Project binding is `BLOCKED_CONFIGURATION`, never an acceptable Codex-only completion path.
 
 ## Usage/session limits
 
@@ -315,7 +341,7 @@ The review converges only when:
 3. all findings from all completed review gates are durable and `RESOLVED` with evidence;
 4. the capability-selected gate passed or was correctly `NOT_APPLICABLE`;
 5. independent Sol/xhigh review approves the current snapshot;
-6. mandatory ChatGPT Project Web review approves that exact same final snapshot.
+6. mandatory ChatGPT Project Web review, executed under the configured account/profile identity, approves that exact same final snapshot.
 
 Finish with a compact completion report, the observed routing table, and:
 
@@ -324,6 +350,6 @@ Stage Handoff: COMPLETE
 Próxima etapa: nenhuma
 ```
 
-On missing predecessor use `RETURN -> speckit-implement`; on real earlier-stage problems return to their owner; on operational/reviewer inability use `BLOCKED`; on missing Web authorization use `BLOCKED_CONFIGURATION`; on exhausted review rounds use `BLOCKED_BUDGET`.
+On missing predecessor use `RETURN -> speckit-implement`; on real earlier-stage problems return to their owner; on operational/reviewer inability use `BLOCKED`; on missing/stale Web account or Project binding use `BLOCKED_CONFIGURATION`; on exhausted review rounds use `BLOCKED_BUDGET`.
 
 Never merge, approve a GitHub PR, mark it ready for review, force-push or perform a destructive reset unless a separate explicit user instruction authorizes it.
