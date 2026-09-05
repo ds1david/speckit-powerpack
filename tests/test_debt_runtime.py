@@ -5,18 +5,22 @@ import json
 from pathlib import Path
 
 ROOT = Path(__file__).parents[1]
-MODULE_PATH = ROOT / "src" / "speckit_powerpack" / "assets" / "runtime" / "powerpack_debt.py"
+ASSETS = ROOT / "src" / "speckit_powerpack" / "assets"
+MODULE_PATH = ASSETS / "runtime" / "powerpack_debt.py"
 spec = importlib.util.spec_from_file_location("powerpack_debt", MODULE_PATH)
 assert spec and spec.loader
 debt = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(debt)
 
 
-def setup_project(tmp_path: Path):
+def setup_project(tmp_path: Path, *, canonical_template: bool = False):
     powerpack = tmp_path / ".specify" / "powerpack"
     powerpack.mkdir(parents=True)
     template = powerpack / "technical-debt-template.md"
-    template.write_text("# Technical Debt Backlog\n\n## Items\n", encoding="utf-8")
+    if canonical_template:
+        template.write_text((ASSETS / "templates" / "technical-debt-backlog.md").read_text(encoding="utf-8"), encoding="utf-8")
+    else:
+        template.write_text("# Technical Debt Backlog\n\n## Items\n", encoding="utf-8")
     (powerpack / "technical-debt.json").write_text(json.dumps({
         "storage_format": "markdown-v1",
         "backlog_path": "docs/technical-debt.md",
@@ -53,6 +57,16 @@ def test_create_blocks_p0_and_active_review(monkeypatch, tmp_path: Path):
     assert debt.main(create_args(priority="P0")) == 4
     assert debt.main(create_args(origin_kind="review")) == 4
     assert not (tmp_path / "docs" / "technical-debt.md").exists()
+
+
+def test_canonical_commented_template_example_does_not_consume_td001(monkeypatch, tmp_path: Path):
+    setup_project(tmp_path, canonical_template=True)
+    monkeypatch.chdir(tmp_path)
+    assert debt.main(create_args()) == 0
+    backlog = tmp_path / "docs" / "technical-debt.md"
+    parsed = debt.parse_items(backlog.read_text(encoding="utf-8"))
+    assert [item["id"] for item in parsed] == ["TD-001"]
+    assert parsed[0]["title"] == "Upgrade brittle adapter"
 
 
 def test_create_deduplicate_start_and_close_require_evidence(monkeypatch, tmp_path: Path):
