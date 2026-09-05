@@ -1,31 +1,40 @@
 ---
-description: "Start controlled work on one or more coherent technical-debt items after a readiness gate."
+description: "Start controlled work on technical debt after a strict readiness gate."
 ---
 
 # SpecKit Technical Debt — Start
 
-Read `.specify/powerpack/technical-debt-policy.md`, `.specify/powerpack/technical-debt.json`, the configured backlog and every project policy in `project_policy_paths`.
+Read the PowerPack debt floor, `.specify/powerpack/technical-debt.json`, the target item and all project policy references.
 
 This command selects existing debt for work. It does not automatically create a SPEC and does not create one SPEC per debt item.
 
 ## Readiness gate
 
-Before any write:
+Before writing:
 
-1. confirm every ID exists and is unresolved;
-2. reject any item that violates the effective policy floor, for example a blocker incorrectly recorded as debt or work still owned by an active review/convergence flow;
-3. confirm owner, impact, deferral rationale and objective resolution criteria;
-4. identify explicit dependencies and related items;
-5. verify that multiple requested IDs form a coherent implementation unit;
-6. if a SPEC is supplied, verify that the link is consistent and does not silently broaden that SPEC;
-7. treat PR/branch/commit references only as provenance.
+1. exact ID exists and is `OPEN`;
+2. readiness is `READY`;
+3. item still satisfies the effective debt policy floor;
+4. owner, impact, deferral rationale and objective resolution criteria remain meaningful;
+5. dependencies/blockers are understood;
+6. if several items will be worked together, they form one coherent implementation capability;
+7. a supplied SPEC does not silently broaden unrelated scope.
 
-If a material decision, criterion or prerequisite is missing, return `NEEDS_REFINEMENT` or `BLOCKED` without writing.
+If material information is missing return `NEEDS_REFINEMENT`/`BLOCKED` without mutation.
 
-## Write contract
+## Start
 
-Update only lifecycle/provenance fields of the selected items. Preserve their original text and history. Mark them `IN_PROGRESS` and append date plus SPEC/PR/branch references when supplied.
+For each approved item invoke:
 
-Do not move debt entries into `specs/`, delete history, reuse IDs or edit application code as a side effect.
+```bash
+python .specify/powerpack/bin/debt.py start <TD-ID> \
+  --spec <optional-spec> \
+  --branch <optional-branch> \
+  --evidence "<start provenance>"
+```
 
-Return the started IDs, owner, backlog path, effective project policies, work references and the resolution criteria that `speckit-debt-close` will later need to prove.
+The runtime mechanically requires `OPEN + READY`, changes only lifecycle/status fields, preserves the original debt description/provenance and appends an `IN_PROGRESS` lifecycle event.
+
+Do not move entries into `specs/`, delete history, reuse IDs or edit application code as a side effect.
+
+Return started IDs, effective policy, work references and the original resolution criteria that `speckit-debt-close` must later prove.
