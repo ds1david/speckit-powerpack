@@ -31,6 +31,9 @@ def test_install_support_materializes_customizable_project_contract(tmp_path: Pa
     full_cycle = json.loads((base / "full-cycle.json").read_text(encoding="utf-8"))
     assert full_cycle["behavior"]["same_spec_only"] is True
     assert full_cycle["behavior"]["allow_debt_escape_hatch"] is False
+    assert full_cycle["behavior"]["explicit_initial_implement_required"] is True
+    assert full_cycle["behavior"]["implement_review_owns_convergence"] is True
+    assert "converge" not in full_cycle["phases"]
 
     update = json.loads((base / "update.json").read_text(encoding="utf-8"))
     assert update["auto_check_on_install"] is True
@@ -40,6 +43,21 @@ def test_install_support_materializes_customizable_project_contract(tmp_path: Pa
     routing = json.loads((base / "model-routing.json").read_text(encoding="utf-8"))
     assert routing["active_integration"] == "claude"
     assert routing["stages"]["debt-list"] == "economical"
+
+
+def test_codex_install_materializes_terra_parent_and_sol_reviewer_defaults(tmp_path: Path):
+    (tmp_path / ".specify").mkdir()
+    cli.install_support(tmp_path, "codex")
+    routing = json.loads((tmp_path / ".specify" / "powerpack" / "model-routing.json").read_text(encoding="utf-8"))
+
+    assert routing["active_integration"] == "codex"
+    assert routing["integrations"]["codex"]["coding"] == "gpt-5.6-terra"
+    assert routing["integrations"]["codex"]["orchestration"] == "gpt-5.6-terra"
+    assert routing["integrations"]["codex"]["economical"] == "gpt-5.6-luna"
+    assert routing["integrations"]["codex"]["semantic_gate"] == "gpt-5.6-sol"
+    assert routing["integrations"]["codex"]["reviewer"] == "gpt-5.6-sol"
+    assert routing["effort"]["codex"]["coding"] == "high"
+    assert routing["effort"]["codex"]["reviewer"] == "xhigh"
 
 
 def test_install_support_preserves_project_config_until_explicit_reset(tmp_path: Path):
