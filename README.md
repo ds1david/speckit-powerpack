@@ -20,9 +20,11 @@ speckit-specify
   -> speckit-implement-review
        -> speckit-converge
             -> tasks appended? speckit-implement -> speckit-converge ...
-       -> independent review
+       -> independent Sol review
             -> findings? implement fixes -> speckit-converge -> review ...
-            -> approved? COMPLETE
+       -> mandatory ChatGPT Project Web review
+            -> findings? implement fixes -> speckit-converge -> Sol review -> Web review ...
+            -> same final snapshot approved by both gates? COMPLETE
             -> review budget exhausted? BLOCKED_BUDGET -> explicit extend
 ```
 
@@ -45,7 +47,9 @@ speckit-specify
 - architecture/OS/language/framework/build-tool agnostic capability resolution.
 - Claude Code / Codex executor-aware reviewer routing without recursive Codex CLI spawning.
 - Codex-first model routing: Terra parent, Luna bounded worker, Sol semantic gate/advisor/reviewer.
-- optional ChatGPT Project Web second gate with platform-scoped browser profiles and project bindings.
+- mandatory ChatGPT Project Web second gate using a PowerPack-owned isolated Playwright Chromium profile.
+- explicit browser consent scoped to the selected ChatGPT Project; Windows Edge/Chrome state is never reused.
+- compatible Spec Kit bootstrap/upgrade to the tested release when an older CLI is installed.
 - confirmed self/project update management plus explicit forced recovery.
 - usage/session-limit checkpoints and resumable execution.
 - cross-platform CI for non-draft PRs and `main`.
@@ -83,11 +87,13 @@ flowchart TB
     EXT --> UPD[confirmed update/recovery]
 
     CLI --> RT[Project-local Python runtimes]
+    CLI --> PW[isolated Playwright Chromium consent/profile]
     RT --> STATE[same-SPEC receipts/review ledger]
     RT --> CAP[capability resolver]
     RT --> RP[review protocol validator]
     RT --> FC[full-cycle state machine]
     RT --> TD[technical-debt ledger]
+    PW --> WEB[ChatGPT Project Web gate]
 ```
 
 Generated `.claude/skills/*` and `.agents/skills/*` files are materialized views, not the durable customization source.
@@ -97,8 +103,9 @@ Generated `.claude/skills/*` and `.agents/skills/*` files are materialized views
 - Python 3.11+
 - Git
 - `uv` when PowerPack must bootstrap Spec Kit or self-update
+- official Spec Kit `>=1.0.0` (the installer can upgrade to the tested `v1.0.4`)
 - Claude Code and/or Codex CLI
-- Playwright only for the optional ChatGPT Project Web gate
+- Playwright + Chromium for the mandatory ChatGPT Project Web gate; Playwright is a core package dependency and Chromium is prepared by installation/setup
 
 Claude Code is **not required** for a Codex-first PowerPack execution.
 
@@ -156,8 +163,6 @@ speckit-powerpack init . --integration codex
 
 ### Existing Spec Kit project — Codex primary
 
-This is the recommended path when the project already contains Spec Kit-generated skills and Codex is the primary executor:
-
 ```bash
 cd /path/to/existing-project
 
@@ -167,17 +172,30 @@ git branch --show-current
 uv tool install --force \
   git+https://github.com/ds1david/speckit-powerpack.git@main
 
-speckit-powerpack install . --integration codex
+speckit-powerpack install . --integration codex --bootstrap-speckit
+```
+
+`--bootstrap-speckit` is also the supported upgrade path when an older incompatible Spec Kit already exists. PowerPack detects the installed version and upgrades it to the tested release instead of allowing the preset installation to fail later with a compatibility error.
+
+Installation materializes the PowerPack and prepares Playwright/Chromium, but **does not silently grant Web access**. Review readiness requires one explicit consent operation:
+
+```bash
+speckit-powerpack review authorize \
+  --profile atsel \
+  --project atsel \
+  --url 'https://chatgpt.com/g/g-p-.../project' \
+  --path .
+```
+
+That command opens a visible PowerPack Chromium window. The first tab explains the requested scope and asks for permission. If authorized, the selected ChatGPT Project opens in a second tab; credentials/MFA are entered only on `chatgpt.com`. Return to the consent tab and grant access only after confirming the correct Project.
+
+Finally:
+
+```bash
 speckit-powerpack doctor
 ```
 
-If `specify` is missing:
-
-```bash
-speckit-powerpack install . \
-  --integration codex \
-  --bootstrap-speckit
-```
+`doctor` is not green until Spec Kit compatibility, executor availability, Playwright browser preparation, explicit Playwright consent and the exact Project binding are all present.
 
 Then inspect:
 
@@ -185,6 +203,7 @@ Then inspect:
 cat .specify/powerpack/model-routing.json
 cat .specify/powerpack/full-cycle.json
 cat .specify/powerpack/prerequisites.json
+cat .specify/powerpack/review.json
 ```
 
 Expected core values include:
@@ -196,9 +215,11 @@ full-cycle           -> gpt-5.6-terra/high
 implement-review     -> gpt-5.6-terra/high parent
 convergence semantic gate -> gpt-5.6-sol/high
 independent reviewer -> gpt-5.6-sol/xhigh/read-only
+chatgpt_web.required = true
+chatgpt_web.authorization = playwright-consent
 ```
 
-For the full migration/checklist, including an already-installed Claude-first PowerPack project, see [`docs/CODEX_FIRST_INSTALL.md`](docs/CODEX_FIRST_INSTALL.md).
+For the full migration/checklist, see [`docs/CODEX_FIRST_INSTALL.md`](docs/CODEX_FIRST_INSTALL.md).
 
 ### What installation replaces or wraps
 
@@ -212,8 +233,6 @@ PowerPack uses Spec Kit preset strategies instead of blindly copying an old `.cl
 - **replaces/owns** PowerPack technical-debt lifecycle commands.
 
 This rematerializes the enhanced generated skills for the selected integration while preserving unrelated project-owned skills.
-
-PowerPack bootstraps the official Spec Kit Git source through `uv tool install git+https://github.com/github/spec-kit.git@<tested-tag>` when requested.
 
 ## Installed project layout
 
@@ -242,6 +261,19 @@ PowerPack bootstraps the official Spec Kit Git source through `uv tool install g
         ├── full-cycle/
         └── limit-checkpoint.json
 ```
+
+Machine-local browser state lives outside the repository:
+
+```text
+<global PowerPack config>/
+├── browser-install/<platform>.json
+└── browser-profiles/
+    ├── windows/<profile>/
+    ├── linux/<profile>/
+    └── macos/<profile>/
+```
+
+The PowerPack profile is intentionally independent from regular Windows Edge/Chrome profiles.
 
 ## Same-SPEC workflow safety
 
@@ -276,17 +308,7 @@ The full-cycle safety floor requires:
 
 No universal Maven/Gradle/npm/pytest command is embedded in workflow skills. The installed `capabilities.py` discovers a reproducible strategy and fails closed on unknown/ambiguous architecture. Documentation-only implementation deltas are `NOT_APPLICABLE`.
 
-Project override lives in `.specify/powerpack/quality-gates.json`:
-
-```json
-{
-  "schema_version": 1,
-  "policy": "capability-strategy",
-  "custom_command": ["make", "verify"],
-  "unknown_architecture": "block",
-  "ambiguous_architecture": "block"
-}
-```
+Project override lives in `.specify/powerpack/quality-gates.json`.
 
 See [`docs/PORTABILITY.md`](docs/PORTABILITY.md).
 
@@ -301,7 +323,7 @@ flowchart TD
     IMP --> CONV
     CONV -->|clean| SNAP[Bind SPEC/base/merge-base/head/digest]
     SNAP --> PREV[Validate previous findings]
-    PREV --> FULL[Review full current snapshot]
+    PREV --> FULL[Sol review full current snapshot]
     FULL --> ADV[Adversarial verdict challenge]
     ADV --> JSON[Schema 2.0 evidence JSON]
     JSON --> VAL[review_protocol.py]
@@ -311,15 +333,14 @@ flowchart TD
     FIX --> CONV2[Re-converge]
     CONV2 --> GATE[Capability-selected gate]
     GATE --> SNAP
-    VAL -->|approved| WEB{Web second gate configured?}
-    WEB -->|no| DONE[COMPLETE]
-    WEB -->|yes| W[ChatGPT Project same HEAD]
-    W --> VAL
+    VAL -->|Sol approved| WEB[Mandatory ChatGPT Project Web gate same HEAD]
+    WEB -->|findings| TASKS
+    WEB -->|approved same HEAD| DONE[COMPLETE]
 ```
 
-Findings can never be converted to debt/backlog/TODO merely to force convergence.
+Findings can never be converted to debt/backlog/TODO merely to force convergence. Any implementation change invalidates earlier approvals and restarts convergence before a fresh Sol review; Web review runs only after the current Sol review is clean.
 
-If the configured review budget is exhausted before approval, the skill reports `BLOCKED_BUDGET` and recommends an explicit extension such as:
+If the configured review budget is exhausted before both gates approve, the skill reports `BLOCKED_BUDGET` and recommends an explicit extension such as:
 
 ```text
 speckit-implement-review extend 2
@@ -342,7 +363,7 @@ clarify
 → DONE
 ```
 
-`implement-review` internally owns convergence, corrective implementation and review rounds. Intermediate findings do not bounce the top-level state machine out of `implement_review`.
+`implement-review` internally owns convergence, corrective implementation and both review gates. Intermediate findings do not bounce the top-level state machine out of `implement_review`.
 
 `specify` normally creates/selects the SPEC before the cycle begins. If a later phase discovers a real scope/requirements problem, the agent returns to the owner stage and derived artifacts must be revalidated.
 
@@ -380,29 +401,27 @@ Default storage is `docs/technical-debt.md`, with stable IDs, provenance, readin
 
 See [`docs/TECHNICAL_DEBT.md`](docs/TECHNICAL_DEBT.md).
 
-## ChatGPT Project Web gate
+## Mandatory ChatGPT Project Web gate
 
-The Web second gate is optional. A Codex-only implementation review can converge while `chatgpt_web.enabled=false`.
+The second Web gate is part of the default completion contract. A Codex-only approval is insufficient for `COMPLETE`.
 
-Persistent browser identities are platform-scoped:
+PowerPack deliberately uses a **separate persistent Chromium user-data directory** rather than attaching to the default Chrome/Edge profile. This keeps cookies, localStorage and history isolated from normal browsing while allowing the PowerPack login to persist between reviews.
 
-```text
-<global PowerPack config>/browser-profiles/
-├── windows/work/
-├── linux/work/     # WSL uses Linux namespace
-└── macos/work/
-```
-
-The same project alias may bind to different profile/account/project URLs per platform.
+Authorize once per platform/profile/Project binding:
 
 ```bash
-speckit-powerpack review auth login work
-speckit-powerpack review project bind my-project 'https://chatgpt.com/g/g-p-.../project' --profile work
-speckit-powerpack review project use my-project
-speckit-powerpack review project list --all-platforms
+speckit-powerpack review authorize \
+  --profile work \
+  --project my-project \
+  --url 'https://chatgpt.com/g/g-p-.../project' \
+  --path .
 ```
 
-Credentials/MFA are entered only in the real browser.
+The browser consent page states the profile path and requested Project URL before any binding is persisted. Cancelling the consent page records no authorization. Legacy `auth login`/`project bind` commands do not satisfy `doctor` by themselves; readiness requires the `playwright-consent` grant.
+
+WSL uses the Linux namespace. Do not point PowerPack at the Windows Edge/Chrome `User Data` directory.
+
+Credentials/MFA are never stored in project configuration. Browser session state remains in the PowerPack profile directory outside the repository.
 
 ## Updates and recovery
 
@@ -466,7 +485,8 @@ A temporary Claude Code limit does not require changing the SDD workflow. Set Co
 - Codex independent review uses Sol/xhigh/read-only semantics.
 - The Codex Terra parent owns writes; the Sol reviewer does not implement findings.
 - Recursive Codex CLI spawning for review is forbidden.
-- Browser auth lives outside source repositories and is separated by platform.
+- ChatGPT Web requires explicit Playwright consent and an exact Project binding.
+- The PowerPack Chromium profile is separated from default Edge/Chrome browser state and from source repositories.
 - Review/full-cycle ephemeral state is gitignored; durable findings/receipts are preserved.
 - PowerPack workflows do not authorize merge, GitHub approval, ready-for-review, force-push or destructive reset.
 - Technical debt cannot hide current-flow blockers/findings.

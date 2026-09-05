@@ -14,6 +14,12 @@ from typing import Any
 from urllib.parse import urlparse
 
 from . import __version__
+from .review_onboarding import (
+    ReviewAuthorizationResult,
+    authorize_chatgpt_project,
+    browser_install_ready,
+    ensure_chromium,
+)
 from .update_manager import UpdateError, apply_self_update, check_update
 
 SPECKIT_REPO = "https://github.com/github/spec-kit.git"
@@ -172,6 +178,7 @@ def enforce_mandatory_web_review(review_path: Path) -> None:
     web.setdefault("profile", None)
     web.setdefault("profile_scope", "platform")
     web.setdefault("profile_platform", None)
+    web.setdefault("authorization", None)
     write_json(review_path, review, overwrite=True)
 
 
@@ -250,26 +257,24 @@ def ensure_playwright() -> None:
     run([sys.executable, "-m", "pip", "install", "playwright>=1.55,<2"])
 
 
+def global_root() -> Path:
+    root = default_config_base() / "speckit-powerpack"
+    root.mkdir(parents=True, exist_ok=True)
+    if os.name != "nt":
+        root.chmod(0o700)
+    return root
+
+
 def playwright_browser_ready() -> bool:
-    if not playwright_package_ready():
-        return False
-    try:
-        from playwright.sync_api import sync_playwright
-        with sync_playwright() as p:
-            return Path(p.chromium.executable_path).is_file()
-    except Exception:
-        return False
+    return playwright_package_ready() and browser_install_ready(global_root(), platform_key())
 
 
 def ensure_playwright_browser() -> None:
     ensure_playwright()
-    if not playwright_browser_ready():
-        run([sys.executable, "-m", "playwright", "install", "chromium"])
-    if not playwright_browser_ready():
-        raise PowerPackError(
-            "Playwright is installed but Chromium is not ready. "
-            "Run 'speckit-powerpack review setup --install-browser' and inspect the browser installation error."
-        )
+    try:
+        ensure_chromium(global_root(), platform_key())
+    except RuntimeError as exc:
+        raise PowerPackError("Playwright is installed but Chromium could not be prepared: " + str(exc)) from exc
 
 
 def install_powerpack(path: str, integration: str, *, initialize: bool, bootstrap: bool, overwrite_config: bool = False) -> None:
@@ -283,14 +288,6 @@ def install_powerpack(path: str, integration: str, *, initialize: bool, bootstra
     install_support(project, integration, overwrite_config=overwrite_config)
     install_components(project, specify)
     ensure_playwright_browser()
-
-
-def global_root() -> Path:
-    root = default_config_base() / "speckit-powerpack"
-    root.mkdir(parents=True, exist_ok=True)
-    if os.name != "nt":
-        root.chmod(0o700)
-    return root
 
 
 def _migrate_global_config(data: dict[str, Any], *, current_platform: str) -> dict[str, Any]:
@@ -343,15 +340,22 @@ def profile_dir(name: str, *, system: str | None = None, create: bool = True) ->
 
 def browser_action(profile: str, url: str, purpose: str) -> None:
     ensure_playwright_browser()
+    from playwright.sync_api import Error as PlaywrightError
     from playwright.sync_api import sync_playwright
     current = platform_key()
-    with sync_playwright() as p:
-        context = p.chromium.launch_persistent_context(str(profile_dir(profile)), headless=False)
-        page = context.pages[0] if context.pages else context.new_page()
-        page.goto(url, wait_until="domcontentloaded")
-        print(f"Browser opened for {purpose} using {current} profile '{profile}'. Enter credentials/MFA only in the browser.")
-        input("Press Enter after completing the browser action: ")
-        context.close()
+    try:
+        with sync_playwright() as p:
+            context = p.chromium.launch_persistent_context(str(profile_dir(profile)), headless=False)
+            try:
+                page = context.pages[0] if context.pages else context.new_page()
+                page.goto(url, wait_until="domcontentloaded")
+                print(f"Browser opened for {purpose} using {current} PowerPack profile '{profile}'.")
+                print("Enter credentials/MFA only in the browser. Press Enter here after completing the browser action.")
+                input()
+            finally:
+                context.close()
+    except PlaywrightError as exc:
+        raise PowerPackError("Playwright browser action was closed or failed before completion.") from exc
 
 
 def validate_project_url(url: str) -> str:
@@ -397,14 +401,26 @@ def review_readiness(project: Path) -> dict[str, bool]:
     except (OSError, json.JSONDecodeError):
         review = {}
     web = review.get("chatgpt_web", {}) if isinstance(review, dict) else {}
+    if not isinstance(web, dict):
+        web = {}
     current = platform_key()
-    profile = web.get("profile") if isinstance(web, dict) else None
-    alias = web.get("project_alias") if isinstance(web, dict) else None
-    url = web.get("project_url") if isinstance(web, dict) else None
+    profile = web.get("profile")
+    alias = web.get("project_alias")
+    url = web.get("project_url")
 
     _, global_data = global_config()
     authenticated = global_data.get("authenticated_profiles", {}).get(current, {})
-    auth_ok = bool(profile and authenticated.get(profile) and profile_dir(profile, create=False).is_dir())
+    authorization = global_data.get("authorizations", {}).get(current, {}).get(profile) if profile else None
+    auth_ok = bool(
+        profile
+        and isinstance(authenticated.get(profile), dict)
+        and authenticated.get(profile, {}).get("source") == "playwright-consent"
+        and isinstance(authorization, dict)
+        and authorization.get("scope") == "chatgpt-web-review"
+        and authorization.get("project_alias") == alias
+        and authorization.get("project_url") == url
+        and profile_dir(profile, create=False).is_dir()
+    )
 
     registered = global_data.get("projects", {}).get(alias) if alias else None
     binding = registered.get("bindings", {}).get(current) if isinstance(registered, dict) else None
@@ -412,12 +428,14 @@ def review_readiness(project: Path) -> dict[str, bool]:
         alias
         and profile
         and url
+        and web.get("authorization") == "playwright-consent"
         and isinstance(binding, dict)
         and binding.get("profile") == profile
         and binding.get("url") == url
+        and binding.get("authorization") == "playwright-consent"
     )
     return {
-        "web-review-required": bool(web.get("required") and web.get("enabled")) if isinstance(web, dict) else False,
+        "web-review-required": bool(web.get("required") and web.get("enabled")),
         "playwright-package": playwright_package_ready(),
         "playwright-browser": playwright_browser_ready(),
         "chatgpt-authenticated": auth_ok,
@@ -430,14 +448,65 @@ def print_review_setup_status(project: Path) -> None:
     if all(readiness.values()):
         print("Mandatory ChatGPT Project Web review is configured and ready.")
         return
-    print("\nMANDATORY REVIEW SETUP REQUIRED")
-    print("The PowerPack files are installed, but deep review is not ready until ChatGPT authentication and Project binding are configured.")
-    print("Complete these steps in this same OS/WSL environment:")
-    print("  speckit-powerpack review auth login <profile>")
-    print("  speckit-powerpack review project bind <alias> https://chatgpt.com/g/g-p-.../project --profile <profile>")
-    print("  speckit-powerpack review project use <alias> --path .")
-    print("  speckit-powerpack doctor")
-    print("Credentials and MFA are entered only in the visible Playwright browser; never in the CLI.\n")
+    print("\nMANDATORY REVIEW AUTHORIZATION REQUIRED")
+    print("PowerPack is installed. Authorize ChatGPT Web in one isolated Playwright profile:")
+    print(
+        "  speckit-powerpack review authorize --profile <profile> --project <alias> "
+        "--url https://chatgpt.com/g/g-p-.../project --path ."
+    )
+    print("The authorization screen opens inside PowerPack Chromium, never your Windows Edge/Chrome profile.")
+    print("Credentials and MFA are entered only on chatgpt.com.\n")
+
+
+def _write_authorized_project(*, result: ReviewAuthorizationResult, project_path: Path) -> None:
+    review_path = project_path / ".specify" / "powerpack" / "review.json"
+    if not review_path.is_file():
+        raise PowerPackError(
+            "PowerPack review config is missing; install/refresh PowerPack in this project before authorizing Web review."
+        )
+    try:
+        review = json.loads(review_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise PowerPackError(f"Cannot read PowerPack review config: {exc}") from exc
+    if not isinstance(review, dict):
+        raise PowerPackError("PowerPack review config must contain an object.")
+
+    cfg_path, data = global_config()
+    current = result.platform
+    profile = result.profile
+    alias = result.project_alias
+    data.setdefault("active_profiles", {})[current] = profile
+    data.setdefault("authenticated_profiles", {}).setdefault(current, {})[profile] = {
+        "confirmed": True,
+        "source": "playwright-consent",
+        "granted_at": result.granted_at,
+    }
+    data.setdefault("authorizations", {}).setdefault(current, {})[profile] = {
+        "scope": "chatgpt-web-review",
+        "project_alias": alias,
+        "project_url": result.project_url,
+        "profile_dir": result.profile_dir,
+        "granted_at": result.granted_at,
+    }
+    registered = data.setdefault("projects", {}).setdefault(alias, {"bindings": {}})
+    registered.setdefault("bindings", {})[current] = {
+        "url": result.project_url,
+        "profile": profile,
+        "authorization": "playwright-consent",
+    }
+
+    web = review.setdefault("chatgpt_web", {})
+    web["required"] = True
+    web["enabled"] = True
+    web["project_alias"] = alias
+    web["project_url"] = result.project_url
+    web["profile"] = profile
+    web["profile_scope"] = "platform"
+    web["profile_platform"] = current
+    web["authorization"] = "playwright-consent"
+
+    save_global(cfg_path, data)
+    write_json(review_path, review, overwrite=True)
 
 
 def confirm_update(prompt: str, *, assume_yes: bool = False) -> bool:
@@ -595,10 +664,10 @@ def cmd_doctor(args: argparse.Namespace) -> None:
         "selected-executor": bool(shutil.which(integration)),
         **readiness,
     }
-    print(f"Platform:   {platform_key()} ({platform_module.system()})")
-    print(f"Config:     {global_root()}")
-    print(f"Integration:{integration}")
-    print(f"Spec Kit:   {current_spec_kit or 'unknown'} (requires >= {SPECKIT_MIN_VERSION_TEXT})")
+    print(f"Platform:    {platform_key()} ({platform_module.system()})")
+    print(f"Config:      {global_root()}")
+    print(f"Integration: {integration}")
+    print(f"Spec Kit:    {current_spec_kit or 'unknown'} (requires >= {SPECKIT_MIN_VERSION_TEXT})")
     for key, ok in checks.items():
         print(f"{'OK' if ok else 'FAIL':4} {key}")
     required = (
@@ -613,17 +682,54 @@ def cmd_doctor(args: argparse.Namespace) -> None:
 
 def cmd_review_setup(args: argparse.Namespace) -> None:
     ensure_playwright_browser()
-    print("Playwright and Chromium review dependencies are ready.")
+    print("Playwright and isolated Chromium review dependencies are ready.")
+
+
+def cmd_review_authorize(args: argparse.Namespace) -> None:
+    project_path = Path(args.path).expanduser().resolve()
+    if not (project_path / ".specify" / "powerpack" / "review.json").is_file():
+        raise PowerPackError(
+            "Target project is not PowerPack-ready. Run 'speckit-powerpack install . --integration <executor>' first."
+        )
+    url = validate_project_url(args.url)
+    current = platform_key()
+    profile_path = profile_dir(args.profile)
+    try:
+        result = authorize_chatgpt_project(
+            config_root=global_root(),
+            platform=current,
+            profile=args.profile,
+            profile_dir=profile_path,
+            project_alias=args.project,
+            project_url=url,
+        )
+    except RuntimeError as exc:
+        raise PowerPackError(str(exc)) from exc
+    if not result.granted:
+        raise PowerPackError("ChatGPT Web authorization was cancelled; no Project binding was recorded.")
+    _write_authorized_project(result=result, project_path=project_path)
+    print(
+        f"Authorized ChatGPT Project '{result.project_alias}' using isolated Playwright profile "
+        f"'{result.profile}' on {result.platform}."
+    )
+    print(f"Profile storage: {result.profile_dir}")
+    print("Run 'speckit-powerpack doctor' to validate review readiness.")
 
 
 def cmd_auth_login(args: argparse.Namespace) -> None:
-    browser_action(args.profile, "https://chatgpt.com/", "ChatGPT login")
+    browser_action(args.profile, "https://chatgpt.com/", "legacy ChatGPT login")
     current = platform_key()
     path, data = global_config()
     data.setdefault("active_profiles", {})[current] = args.profile
-    data.setdefault("authenticated_profiles", {}).setdefault(current, {})[args.profile] = {"confirmed": True}
+    data.setdefault("authenticated_profiles", {}).setdefault(current, {})[args.profile] = {
+        "confirmed": True,
+        "source": "legacy-login",
+    }
     save_global(path, data)
-    print(f"Recorded completed ChatGPT browser login for profile '{args.profile}' on {current}.")
+    print(
+        "Login recorded, but this legacy command does not grant mandatory Web review permission. "
+        "Use 'speckit-powerpack review authorize ...' to create a playwright-consent grant."
+    )
 
 
 def cmd_auth_logout(args: argparse.Namespace) -> None:
@@ -631,6 +737,7 @@ def cmd_auth_logout(args: argparse.Namespace) -> None:
     current = platform_key()
     path, data = global_config()
     data.setdefault("authenticated_profiles", {}).setdefault(current, {}).pop(args.profile, None)
+    data.setdefault("authorizations", {}).setdefault(current, {}).pop(args.profile, None)
     save_global(path, data)
 
 
@@ -643,7 +750,16 @@ def cmd_auth_forget(args: argparse.Namespace) -> None:
     if data.setdefault("active_profiles", {}).get(current) == args.profile:
         data["active_profiles"].pop(current, None)
     data.setdefault("authenticated_profiles", {}).setdefault(current, {}).pop(args.profile, None)
+    data.setdefault("authorizations", {}).setdefault(current, {}).pop(args.profile, None)
+    for registered in data.setdefault("projects", {}).values():
+        if not isinstance(registered, dict):
+            continue
+        bindings = registered.setdefault("bindings", {})
+        binding = bindings.get(current)
+        if isinstance(binding, dict) and binding.get("profile") == args.profile:
+            bindings.pop(current, None)
     save_global(cfg_path, data)
+    print(f"Forgot PowerPack browser profile '{args.profile}' and its {current} authorization bindings.")
 
 
 def cmd_project_bind(args: argparse.Namespace) -> None:
@@ -660,9 +776,11 @@ def cmd_project_bind(args: argparse.Namespace) -> None:
         )
     project = data.setdefault("projects", {}).setdefault(args.alias, {"bindings": {}})
     bindings = project.setdefault("bindings", {})
-    bindings[current] = {"url": validate_project_url(args.url), "profile": profile}
+    bindings[current] = {"url": validate_project_url(args.url), "profile": profile, "authorization": "legacy"}
     save_global(cfg_path, data)
-    print(f"Bound project '{args.alias}' on {current} to profile '{profile}'.")
+    print(
+        f"Bound project '{args.alias}' on {current} to profile '{profile}', but legacy binding alone does not satisfy mandatory Web review consent."
+    )
 
 
 def cmd_project_list(args: argparse.Namespace) -> None:
@@ -672,10 +790,16 @@ def cmd_project_list(args: argparse.Namespace) -> None:
         bindings = project.get("bindings", {}) if isinstance(project, dict) else {}
         if args.all_platforms:
             for platform_name, binding in sorted(bindings.items()):
-                print(f"{alias}: platform={platform_name} profile={binding.get('profile')} url={binding.get('url')}")
+                print(
+                    f"{alias}: platform={platform_name} profile={binding.get('profile')} "
+                    f"authorization={binding.get('authorization')} url={binding.get('url')}"
+                )
         elif current in bindings:
             binding = bindings[current]
-            print(f"{alias}: platform={current} profile={binding.get('profile')} url={binding.get('url')}")
+            print(
+                f"{alias}: platform={current} profile={binding.get('profile')} "
+                f"authorization={binding.get('authorization')} url={binding.get('url')}"
+            )
 
 
 def cmd_project_use(args: argparse.Namespace) -> None:
@@ -688,9 +812,6 @@ def cmd_project_use(args: argparse.Namespace) -> None:
     binding = registered.get("bindings", {}).get(current)
     if not binding:
         raise PowerPackError(f"Project alias '{args.alias}' has no ChatGPT binding for platform '{current}'. Bind it on this platform first.")
-    authenticated = global_data.get("authenticated_profiles", {}).get(current, {})
-    if not authenticated.get(binding.get("profile")):
-        raise PowerPackError("The selected project's browser profile is not recorded as authenticated on this platform.")
     review_path = project / ".specify" / "powerpack" / "review.json"
     if not review_path.is_file():
         raise PowerPackError("PowerPack review config is missing; install/refresh the PowerPack in this project first.")
@@ -703,8 +824,15 @@ def cmd_project_use(args: argparse.Namespace) -> None:
     web["profile"] = binding["profile"]
     web["profile_scope"] = "platform"
     web["profile_platform"] = current
+    web["authorization"] = binding.get("authorization") if binding.get("authorization") == "playwright-consent" else None
     write_json(review_path, review, overwrite=True)
-    print(f"Project '{args.alias}' is now the mandatory ChatGPT Web review target for {project}.")
+    if web["authorization"] != "playwright-consent":
+        print(
+            f"Project '{args.alias}' selected, but mandatory Web review is not authorized. "
+            "Run 'speckit-powerpack review authorize ...'."
+        )
+    else:
+        print(f"Project '{args.alias}' is the mandatory ChatGPT Web review target for {project}.")
 
 
 def add_install_update_flags(parser: argparse.ArgumentParser) -> None:
@@ -727,6 +855,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     review = sub.add_parser("review"); rsub = review.add_subparsers(dest="review_cmd", required=True)
     p = rsub.add_parser("setup"); p.add_argument("--install-browser", action="store_true"); p.set_defaults(func=cmd_review_setup)
+    p = rsub.add_parser("authorize", help="Authorize mandatory ChatGPT Web review in an isolated Playwright profile")
+    p.add_argument("--profile", required=True); p.add_argument("--project", required=True); p.add_argument("--url", required=True); p.add_argument("--path", default="."); p.set_defaults(func=cmd_review_authorize)
     auth = rsub.add_parser("auth"); asub = auth.add_subparsers(dest="auth_cmd", required=True)
     p = asub.add_parser("login"); p.add_argument("profile"); p.set_defaults(func=cmd_auth_login)
     p = asub.add_parser("logout"); p.add_argument("profile"); p.set_defaults(func=cmd_auth_logout)

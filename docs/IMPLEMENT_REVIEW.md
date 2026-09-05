@@ -12,12 +12,15 @@ speckit-analyze
 → speckit-implement-review
     → speckit-converge
         → tasks appended? speckit-implement → speckit-converge
-    → independent review
-        → findings? implement fixes → speckit-converge → review
+    → Sol/xhigh independent review
+        → findings? implement fixes → speckit-converge → Sol review
+    → mandatory ChatGPT Project Web review
+        → findings? implement fixes → speckit-converge → Sol review → Web review
+    → both gates approve same final snapshot
     → COMPLETE
 ```
 
-`implement-review` is therefore not “perform the initial implementation and then review it”. It means “take the implementation just produced by `speckit-implement`, prove convergence, review it independently, repair every finding and re-prove convergence until the snapshot is approvable”.
+`implement-review` is therefore not “perform the initial implementation and then review it”. It means “take the implementation just produced by `speckit-implement`, prove convergence, review it independently, repair every finding and re-prove convergence until the same final snapshot passes both review gates”.
 
 ## Invariants
 
@@ -42,7 +45,10 @@ speckit-analyze
 19. Documentation-only implementation work does not execute an application build gate.
 20. New implementation changes invalidate approvals associated with an earlier HEAD.
 21. Review/convergence budgets are explicit and are never extended silently.
-22. Aborting removes ephemeral review state, never the durable finding ledger or browser/project authentication bindings.
+22. ChatGPT Project Web review is mandatory and requires a current `playwright-consent` grant for the exact Project/profile/platform binding.
+23. The PowerPack Playwright profile is separate from the default Windows Edge/Chrome user-data directory.
+24. `COMPLETE` requires Sol/xhigh and ChatGPT Web approval of the same final snapshot.
+25. Aborting removes ephemeral review state, never the durable finding ledger or explicitly authorized browser/project binding.
 
 ## Reviewer routing
 
@@ -58,12 +64,10 @@ flowchart LR
     X --> R[review immutable snapshot]
     I --> R
     D --> R
+    R -->|approved| W[mandatory ChatGPT Project Web gate]
 ```
 
-The distinction between **reviewer identity/profile** and **spawn mechanism** prevents two bad states:
-
-- a Terra parent reviewing its own implementation without an independent Sol gate;
-- recursive `codex -> codex` process spawning merely to change reviewer identity.
+The distinction between **reviewer identity/profile** and **spawn mechanism** prevents a Terra parent from reviewing its own implementation and prevents recursive `codex -> codex` process spawning merely to change reviewer identity.
 
 ## Convergence loop
 
@@ -98,7 +102,9 @@ flowchart TD
     FIX --> CONV[Re-run speckit-converge]
     CONV --> GATE[Capability-selected quality gate]
     GATE --> SNAP
-    V -->|APPROVED| NEXT[Codex/Web gate completion]
+    V -->|Sol APPROVED| WEB[Mandatory ChatGPT Web review same snapshot]
+    WEB -->|findings| TASKS
+    WEB -->|APPROVED| DONE[dual-gate approval]
 ```
 
 Required fronts are:
@@ -116,7 +122,7 @@ Required fronts are:
 
 ## Review budget / extend
 
-`max_review_rounds` defaults to 5. When the current snapshot still lacks a valid approval and the configured budget is exhausted, the skill finishes with:
+`max_review_rounds` defaults to 5. When the current snapshot still lacks valid approval from **both** gates and the configured budget is exhausted, the skill finishes with:
 
 ```text
 Stage Handoff: BLOCKED_BUDGET
@@ -125,15 +131,37 @@ Suggested: speckit-implement-review extend 2
 
 `extend N` resumes the same review run and current SPEC. It does not require a new initial `speckit-implement` merely because the review budget was increased.
 
-## ChatGPT Web second gate
+## Mandatory ChatGPT Project Web gate
 
-When configured, Web review is a second independent gate on the same HEAD and uses the same evidence contract. It does not inherit trust from the Codex approval.
+Before review work begins, run:
 
-Browser profiles and project bindings are platform-scoped. Windows, Linux/WSL and macOS may use the same human-readable profile name while keeping completely separate persistent browser storage/authentication.
+```bash
+speckit-powerpack doctor
+```
 
-A Web finding that changes code invalidates the prior Codex approval, requires convergence again and sends the new HEAD back to Codex review.
+The review is `BLOCKED_CONFIGURATION` unless the current platform has:
 
-The Web gate remains optional; when it is not configured, a Codex-only run can still converge.
+- Playwright package and Chromium preparation;
+- an explicit `playwright-consent` grant;
+- a persistent PowerPack browser profile;
+- an exact Project alias/URL/profile binding in `.specify/powerpack/review.json`;
+- the configured executor available.
+
+Authorization is performed by:
+
+```bash
+speckit-powerpack review authorize \
+  --profile <profile> \
+  --project <alias> \
+  --url 'https://chatgpt.com/g/g-p-.../project' \
+  --path .
+```
+
+The Playwright consent tab shows the exact profile storage path and Project URL. After authorization, the selected Project opens in another tab. The user signs in on `chatgpt.com`, verifies the Project, returns to the consent tab and explicitly grants access.
+
+The persistent browser state is PowerPack-owned and platform-scoped. It must not reuse the default Windows Edge/Chrome `User Data` directory. WSL therefore uses its Linux PowerPack profile namespace.
+
+A Web finding that changes code invalidates the prior Sol approval, requires convergence again and sends the new HEAD back through Sol review before Web can evaluate it again. Both final approvals must refer to the same snapshot.
 
 ## Terminal UX
 

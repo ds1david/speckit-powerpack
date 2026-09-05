@@ -24,7 +24,8 @@
     "headless": false,
     "profile": null,
     "profile_scope": "platform",
-    "profile_platform": null
+    "profile_platform": null,
+    "authorization": null
   },
   "quality_gate": {
     "mode": "auto-detect",
