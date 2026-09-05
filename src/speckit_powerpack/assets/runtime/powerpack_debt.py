@@ -59,18 +59,53 @@ def ensure_backlog(root: Path, cfg: dict[str, Any]) -> Path:
     return backlog
 
 
+def visible_markdown_lines(text: str) -> list[str]:
+    """Mask HTML comments while preserving one output entry per input line.
+
+    The canonical backlog template intentionally contains a commented example
+    with a `### TD-001` heading. Treating comments as ledger content would make
+    that example a real item and incorrectly allocate the first debt as TD-002.
+    Keeping line count stable also preserves mutation indices for real items.
+    """
+    result: list[str] = []
+    in_comment = False
+    for original in text.splitlines():
+        line = original
+        visible = ""
+        while line:
+            if in_comment:
+                marker = line.find("-->")
+                if marker < 0:
+                    line = ""
+                    break
+                line = line[marker + 3:]
+                in_comment = False
+                continue
+            marker = line.find("<!--")
+            if marker < 0:
+                visible += line
+                line = ""
+                break
+            visible += line[:marker]
+            line = line[marker + 4:]
+            in_comment = True
+        result.append(visible)
+    return result
+
+
 def parse_items(text: str) -> list[dict[str, Any]]:
-    lines = text.splitlines()
+    raw_lines = text.splitlines()
+    visible_lines = visible_markdown_lines(text)
     starts: list[tuple[int, re.Match[str]]] = []
-    for index, line in enumerate(lines):
+    for index, line in enumerate(visible_lines):
         match = ITEM_RE.match(line)
         if match:
             starts.append((index, match))
     items: list[dict[str, Any]] = []
     for pos, (start, match) in enumerate(starts):
-        end = starts[pos + 1][0] if pos + 1 < len(starts) else len(lines)
+        end = starts[pos + 1][0] if pos + 1 < len(starts) else len(raw_lines)
         fields: dict[str, str] = {}
-        for line in lines[start + 1:end]:
+        for line in visible_lines[start + 1:end]:
             field = FIELD_RE.match(line)
             if field:
                 fields[field.group("name").strip().lower()] = field.group("value").strip()
@@ -269,7 +304,6 @@ def cmd_close(args: argparse.Namespace) -> int:
         return 7
     lines = text.splitlines()
     rewrite_field(lines, item, "Status", "RESOLVED")
-    # Reparse because replacing fields can shift indices when custom items are missing fields.
     reparsed = find_item(parse_items("\n".join(lines)), args.id)
     rewrite_field(lines, reparsed, "Readiness", "RESOLVED")
     gate = f"; gate={args.gate_status}" if args.gate_status else ""
