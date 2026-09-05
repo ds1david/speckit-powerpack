@@ -11,7 +11,7 @@ Use this command to record deliberate technical debt. Do not use it to make an a
 Read, in order:
 
 1. `.specify/powerpack/technical-debt-policy.md` — immutable PowerPack safety floor for this installation;
-2. `.specify/powerpack/technical-debt.json` — backlog path, prefix and project-policy references;
+2. `.specify/powerpack/technical-debt.json` — storage format, backlog path, template path, prefix and project-policy references;
 3. every existing project policy listed in `project_policy_paths`.
 
 The effective policy is cumulative. Project policy may be stricter or add domain-specific ownership/fields, but MUST NOT weaken the PowerPack floor. If policies conflict, apply the stricter rule and report the conflict.
@@ -38,7 +38,11 @@ Prefer one coherent capability over multiple near-duplicate debt entries. Never 
 
 ## Write contract
 
-Resolve `backlog_path` and `id_prefix` from `.specify/powerpack/technical-debt.json`. If the backlog does not exist, create a minimal governed backlog with the PowerPack policy marker and no project-specific assumptions.
+Resolve `storage_format`, `backlog_path`, `template_path` and `id_prefix` from `.specify/powerpack/technical-debt.json`.
+
+If the configured backlog does not exist and `storage_format` is `markdown-v1`, create it by copying the configured `template_path` verbatim, then append the new item. Do not invent a second markdown shape when the canonical template is available.
+
+If a project uses another storage format, follow the stricter project policy/adapter contract; if no deterministic write contract exists, return `BLOCKED_CONFIGURATION` rather than guessing.
 
 Allocate the next stable sequential ID for the configured prefix. Never reuse or renumber IDs.
 
@@ -48,4 +52,4 @@ Do not modify code, SPECs, PRs or unrelated debt items.
 
 ## Result
 
-Return `CREATED`, `DUPLICATE`, `GROUP_WITH_EXISTING`, `NOT_DEBT`, `BLOCKED` or `NEEDS_REFINEMENT`, with evidence for the decision.
+Return `CREATED`, `DUPLICATE`, `GROUP_WITH_EXISTING`, `NOT_DEBT`, `BLOCKED`, `BLOCKED_CONFIGURATION` or `NEEDS_REFINEMENT`, with evidence for the decision.
