@@ -4,21 +4,35 @@ description: "Resolve technical debt only with objective evidence against its or
 
 # SpecKit Technical Debt — Close
 
-Read `.specify/powerpack/technical-debt-policy.md`, `.specify/powerpack/technical-debt.json`, the configured backlog and every project policy in `project_policy_paths`.
+Read the PowerPack debt floor, `.specify/powerpack/technical-debt.json`, the exact item and all configured project policy documents.
 
-Closing debt is an evidence gate. `RESOLVED` is allowed only when the original resolution criteria are demonstrated under the effective policy.
+Closing debt is an evidence gate. `RESOLVED` is allowed only when the original resolution criteria are objectively demonstrated under the effective policy.
 
-For each ID:
+## Evidence gate
 
-1. confirm exact identity, owner and unresolved state;
-2. recover the original resolution criteria and refuse inference when they are too vague;
-3. validate implementation/documentation/test evidence;
-4. verify a linked SPEC actually covers the intended debt without assuming a checkbox is proof;
-5. treat PR/commit/branch references as provenance, not correctness evidence;
-6. when executable validation is required, run the PowerPack capability-selected gate through `.specify/powerpack/bin/capabilities.py`, never a hard-coded language/framework command;
-7. confirm no relevant residual remains against the original criterion;
-8. enforce any stricter project-specific closure evidence from the configured project policies.
+For the exact ID:
 
-If evidence is insufficient, a required gate failed, residual work remains or ownership conflicts, return `NOT_CLOSABLE` and do not write.
+1. recover the original resolution criteria; vague criteria require refinement rather than inference;
+2. validate implementation/documentation/test evidence;
+3. verify linked SPEC coverage rather than trusting a checkbox;
+4. treat PR/commit/branch as provenance, not correctness proof;
+5. when executable validation is relevant, use `.specify/powerpack/bin/capabilities.py gate run`, never a hard-coded ecosystem command;
+6. prove no relevant residual remains;
+7. enforce stricter project closure evidence.
 
-On success, update only the debt item lifecycle/history: mark `RESOLVED`, record date, relevant SPEC/PR/commit provenance and concise validated evidence. Never delete the item or its history.
+If any requirement is not proven, return `NOT_CLOSABLE` and leave the item unchanged.
+
+## Close
+
+Only after the semantic gate passes invoke:
+
+```bash
+python .specify/powerpack/bin/debt.py close <TD-ID> \
+  --criteria-satisfied \
+  --evidence "<objective evidence against original criteria>" \
+  --gate-status <optional PASSED|NOT_APPLICABLE>
+```
+
+The runtime refuses closure without `--criteria-satisfied` and non-empty evidence, then marks status/readiness `RESOLVED` and appends lifecycle evidence. It never deletes the item/history.
+
+If the runtime or a project policy reports a residual, failed gate or ownership conflict, do not retry by weakening the evidence requirement.
