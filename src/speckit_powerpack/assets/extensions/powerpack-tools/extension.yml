@@ -1,0 +1,21 @@
+schema_version: "1.0"
+
+extension:
+  id: "powerpack-tools"
+  name: "SpecKit PowerPack Tools"
+  version: "0.1.0"
+  description: "Portable runtime diagnostics and semantic routing helpers used by PowerPack presets."
+  author: "David Oliveira"
+  repository: "https://github.com/ds1david/speckit-powerpack"
+  license: "MIT"
+
+requires:
+  speckit_version: ">=1.0.0"
+
+provides:
+  commands:
+    - name: "speckit.powerpack-tools.doctor"
+      file: "commands/doctor.md"
+      description: "Diagnose PowerPack runtime, agent CLIs and project configuration."
+
+tags: ["workflow", "routing", "quality", "review"]
