@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "provider": "local-independent",
+  "conversation_strategy": "one-per-pr",
+  "chatgpt_web": {
+    "enabled": false,
+    "mode": "assisted",
+    "project_alias": null,
+    "permissions": {
+      "open_configured_project": true,
+      "open_bound_conversations": true,
+      "create_conversations": false,
+      "delete_conversations": false,
+      "modify_project": false,
+      "read_browser_credentials": false
+    }
+  },
+  "quality_gate": {
+    "mode": "auto",
+    "skip_documentation_only": true
+  }
+}
