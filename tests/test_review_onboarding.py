@@ -89,18 +89,35 @@ def test_entrypoint_registers_account_auth_project_discovery_and_strict_doctor()
     assert project.profile == "webflow"
     assert project.index == 2
 
+    manual = parser.parse_args([
+        "review", "project", "select", "--profile", "webflow", "--manual", "--path", ".",
+    ])
+    assert manual.manual is True
+
+    use = parser.parse_args([
+        "review", "project", "use", "atsel", "--profile", "webflow", "--path", ".",
+    ])
+    assert use.func is account_cli.cmd_project_use
+    assert use.profile == "webflow"
+
     doctor = parser.parse_args(["doctor", ".", "--strict-review"])
     assert doctor.func is account_cli.cmd_doctor
     assert doctor.strict_review is True
 
 
-def test_legacy_project_scoped_authorize_is_deprecated():
-    args = account_cli.build_parser().parse_args([
+def test_legacy_project_scoped_commands_are_deprecated():
+    parser = account_cli.build_parser()
+    args = parser.parse_args([
         "review", "authorize",
         "--profile", "atsel", "--project", "atsel",
         "--url", "https://chatgpt.com/g/g-p-demo/project",
     ])
     assert args.func is account_cli.cmd_legacy_authorize_deprecated
+
+    bind = parser.parse_args([
+        "review", "project", "bind", "atsel", "https://chatgpt.com/g/g-p-demo/project",
+    ])
+    assert bind.func is account_cli.cmd_legacy_project_bind_deprecated
 
 
 def _prepare_account_state(tmp_path: Path, monkeypatch):
@@ -131,9 +148,10 @@ def _prepare_account_state(tmp_path: Path, monkeypatch):
         return config_path, state
 
     def save_global(path: Path, data: dict):
+        snapshot = json.loads(json.dumps(data))
         state.clear()
-        state.update(json.loads(json.dumps(data)))
-        path.write_text(json.dumps(data), encoding="utf-8")
+        state.update(snapshot)
+        path.write_text(json.dumps(snapshot), encoding="utf-8")
 
     monkeypatch.setattr(cli, "global_config", global_config)
     monkeypatch.setattr(cli, "save_global", save_global)
@@ -167,7 +185,7 @@ def test_same_project_can_bind_owner_and_shared_account(tmp_path: Path, monkeypa
 
 
 def test_review_readiness_is_bound_to_selected_account_identity(tmp_path: Path, monkeypatch):
-    state = _prepare_account_state(tmp_path, monkeypatch)
+    _prepare_account_state(tmp_path, monkeypatch)
     project = tmp_path / "repo"
     review_path = project / ".specify" / "powerpack" / "review.json"
     review_path.parent.mkdir(parents=True)
@@ -209,3 +227,31 @@ def test_project_use_requires_explicit_profile_when_same_project_has_two_account
         assert "webflow" in str(exc)
     else:
         raise AssertionError("multiple account bindings should require an explicit profile when no active match exists")
+
+
+def test_reauthorizing_profile_invalidates_old_project_binding(tmp_path: Path, monkeypatch):
+    state = _prepare_account_state(tmp_path, monkeypatch)
+    state["projects"] = {
+        "atsel": {
+            "bindings": {
+                "linux": {
+                    "ds1david": {
+                        "profile": "ds1david",
+                        "url": "https://chatgpt.com/g/g-p-demo/project",
+                        "authorization": account_cli.PROJECT_BINDING_AUTH,
+                    }
+                }
+            }
+        }
+    }
+    result = onboarding.AccountAuthorizationResult(
+        granted=True,
+        profile="ds1david",
+        platform="linux",
+        profile_dir=str(tmp_path / "profiles" / "ds1david"),
+        account_label="owner-plus-reconfigured",
+        granted_at="2026-09-05T23:00:00+00:00",
+    )
+    invalidated = account_cli._persist_account(result)
+    assert invalidated == ["atsel"]
+    assert state["projects"]["atsel"]["bindings"]["linux"]["ds1david"]["authorization"] == account_cli.STALE_BINDING_AUTH
