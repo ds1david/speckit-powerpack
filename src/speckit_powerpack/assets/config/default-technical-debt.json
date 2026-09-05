@@ -1,6 +1,8 @@
 {
   "schema_version": 1,
+  "storage_format": "markdown-v1",
   "backlog_path": "docs/technical-debt.md",
+  "template_path": ".specify/powerpack/technical-debt-template.md",
   "id_prefix": "TD",
   "project_policy_paths": [],
   "priorities": ["P1", "P2", "P3"],
