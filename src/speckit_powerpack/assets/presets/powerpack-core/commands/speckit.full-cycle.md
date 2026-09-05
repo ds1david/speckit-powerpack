@@ -6,76 +6,149 @@ description: "Orchestrate a complete same-SPEC Spec Kit cycle through implementa
 
 This command orchestrates existing Spec Kit and PowerPack primitives. It does not duplicate their internal logic.
 
-## Configuration
-
-Read `.specify/powerpack/full-cycle.json` before starting. Explicit invocation arguments override configurable values for that run.
-
-The configuration controls mode, enabled phases and convergence/review round limits. The following are safety invariants rather than optional preferences and MUST remain true:
-
-- `same_spec_only = true`;
-- `stop_on_blocked = true`;
-- `allow_debt_escape_hatch = false`.
-
-If project configuration attempts to weaken one of those invariants, return `BLOCKED_CONFIGURATION` instead of silently accepting it.
-
 ## Core invariants
 
-- Resolve one SPEC at the beginning and never switch SPEC implicitly during the run.
-- Preserve the PowerPack agnostic execution contract: `DISCOVER CAPABILITY -> SELECT STRATEGY -> EXECUTE CONTRACT`.
-- Do not hard-code OS, language, framework, IDE or build tool behavior.
-- Do not bypass a blocked prerequisite, constitution conflict, failed quality gate or unresolved review finding.
-- Do not merge, approve a PR, mark it ready, force-push or perform destructive reset as part of this workflow.
+- Resolve exactly one SPEC at the beginning and never switch SPEC implicitly.
+- Preserve `DISCOVER CAPABILITY -> SELECT STRATEGY -> EXECUTE CONTRACT`.
+- Never hard-code OS, language, framework, IDE or build-tool behavior.
+- Never bypass a blocked prerequisite, constitution conflict, failed gate or unresolved review finding.
+- Never convert convergence/review obligations to technical debt merely to finish the cycle.
+- Never merge, approve, mark ready, force-push or destructively reset as part of this workflow.
 
-## Modes
+## Configuration
 
-- `interactive`: pause only when a phase genuinely requires a user decision or the user chooses batch control in implement-review.
-- `auto`: automatically continue through deterministic phases, convergence implementation batches and all review findings. Material ambiguity still blocks instead of being guessed.
+Read `.specify/powerpack/full-cycle.json`. Projects may change enabled phases, mode and round limits, but MUST NOT weaken `same_spec_only`, `stop_on_blocked` or `allow_debt_escape_hatch=false`.
 
-The configured limits stop the workflow **before** starting an additional convergence/review round. Preserve resumable state instead of partially consuming an over-limit round.
+## Start / resume state
 
-## Feature resolution
+After resolving or creating the single target SPEC, start the state machine:
 
-If the argument resolves an existing SPEC, use it. If no SPEC exists and the user supplied a feature description, invoke `speckit-specify` once to create it, then bind the full-cycle run to that SPEC. Never create a second SPEC automatically.
+```bash
+python .specify/powerpack/bin/full_cycle.py start \
+  --feature-dir <SPEC_DIR> \
+  --mode <interactive|auto>
+```
 
-## Specification phase
+If a run already exists, use:
 
-Execute only phases enabled by `full-cycle.json`, while preserving prerequisites. The normal sequence is:
+```bash
+python .specify/powerpack/bin/full_cycle.py status --feature-dir <SPEC_DIR>
+```
 
-1. `speckit-clarify`;
-2. `speckit-plan`;
-3. `speckit-checklist` when applicable;
-4. `speckit-checklist-converge` only when the same-SPEC checklist predecessor actually ran;
-5. `speckit-tasks`;
-6. `speckit-analyze`.
+The returned `current_phase` is authoritative. Do not execute a later phase first.
 
-Disabling a phase never fabricates the receipt required by a downstream phase. If an enabled downstream phase requires a disabled predecessor, return `BLOCKED_CONFIGURATION` and identify the conflicting settings.
+## Phase execution
 
-A blocking inconsistency found by analyze must be resolved in the appropriate specification artifact before implementation. Do not implement around a contradictory SPEC.
+For each current phase invoke the corresponding Spec Kit/PowerPack command for the SAME SPEC:
 
-## Implementation/convergence loop
+| Runtime phase | Command |
+|---|---|
+| `clarify` | `speckit-clarify` |
+| `plan` | `speckit-plan` |
+| `checklist` | `speckit-checklist` when applicable |
+| `checklist_converge` | `speckit-checklist-converge` |
+| `tasks` | `speckit-tasks` |
+| `analyze` | `speckit-analyze` |
+| `implement` | `speckit-implement` |
+| `converge` | `speckit-converge` |
+| `implement_review` | `speckit-implement-review` |
 
-When enabled, run `speckit-implement`, then `speckit-converge`.
+After a normal deterministic phase succeeds:
 
-If converge appends actionable tasks, return to `speckit-implement` for those tasks and run converge again. Continue until converge reports no remaining specified work or the configured convergence-round limit is reached.
+```bash
+python .specify/powerpack/bin/full_cycle.py advance \
+  --feature-dir <SPEC_DIR> \
+  --phase <phase> \
+  --outcome completed \
+  --evidence "concise verifiable result"
+```
 
-Do not convert convergence gaps to technical debt to end the loop.
+If checklist is not applicable, record `--outcome skipped`; do not fake an execution receipt.
 
-Project-specific closure gates may run after convergence and before implementation review when the project config/policy defines them. Such gates complement the generic workflow; PowerPack must not hard-code their language/framework/domain assumptions.
+## Implementation / convergence loop
+
+Run `speckit-implement`, then `speckit-converge`.
+
+If converge finds actionable remaining work, it must first persist that work in the normal same-SPEC task flow, then record:
+
+```bash
+python .specify/powerpack/bin/full_cycle.py advance \
+  --feature-dir <SPEC_DIR> \
+  --phase converge \
+  --outcome needs-implementation \
+  --evidence "remaining task IDs / convergence evidence"
+```
+
+The runtime returns `current_phase=implement` and remembers that successful implementation must return to `converge`.
+
+When converge proves there are no remaining implementation gaps:
+
+```bash
+python .specify/powerpack/bin/full_cycle.py advance \
+  --feature-dir <SPEC_DIR> \
+  --phase converge \
+  --outcome converged \
+  --evidence "convergence evidence"
+```
+
+The configured `max_convergence_rounds` is enforced by the runtime.
 
 ## Independent implementation-review loop
 
-When enabled, run `speckit-implement-review` after implementation convergence using its configured interactive/auto behavior.
+Run canonical `speckit-implement-review`. It inherits deep-review schema 2.0, previous-finding validation, full-snapshot review, adversarial verdict challenge, capability-driven gates and optional ChatGPT Web gate.
 
-Every review finding must enter the same-SPEC `tasks.md` review ledger and be resolved. The deep-review evidence protocol, previous-finding validation, full snapshot re-review, adversarial verdict challenge, capability-driven quality gates and optional ChatGPT Web gate are inherited from `speckit-implement-review` rather than reimplemented here.
+When valid findings exist:
 
-If review changes code, the resulting head must be independently reviewed again. Completion requires approval on the current head and all durable findings resolved.
+```bash
+python .specify/powerpack/bin/full_cycle.py advance \
+  --feature-dir <SPEC_DIR> \
+  --phase implement_review \
+  --outcome findings \
+  --evidence "durable REV-* finding IDs"
+```
 
-## Limits and resume
+The runtime returns to `implement`; after implementation it routes back to `implement_review`. Findings remain in `tasks.md`; never move them to debt/backlog/TODO.
 
-When Claude Code or Codex usage/session limits occur, reuse the PowerPack checkpoint policy. Persist the current phase, SPEC, head, convergence/review round and safe resume command. `resume-later` must not lose tasks or review findings.
+When independent review approves the current final snapshot:
 
-## Completion report
+```bash
+python .specify/powerpack/bin/full_cycle.py advance \
+  --feature-dir <SPEC_DIR> \
+  --phase implement_review \
+  --outcome approved \
+  --evidence "approved provider(s) and final head"
+```
 
-Report SPEC ID/path, effective `full-cycle.json` settings, phases executed and receipts, convergence rounds, implementation-review rounds/providers, quality/closure gates and results, files/tasks materially changed, unresolved blockers and final head SHA when Git is available.
+The configured `max_review_rounds` is enforced by the runtime.
 
-`DONE` means all enabled required phases converged consistently and, when `implement_review` is enabled, the independent implementation review approves the current snapshot. It does not mean a GitHub PR is approved or merged.
+## Blocking, limits and resume
+
+If a phase is materially blocked:
+
+```bash
+python .specify/powerpack/bin/full_cycle.py advance \
+  --feature-dir <SPEC_DIR> \
+  --phase <phase> \
+  --outcome blocked \
+  --evidence "blocker"
+```
+
+For Claude/Codex usage limits, also use the PowerPack limit checkpoint mechanism. The cycle state is already durable enough to report the exact phase to resume. After the external blocker is legitimately resolved:
+
+```bash
+python .specify/powerpack/bin/full_cycle.py resume --feature-dir <SPEC_DIR> --unblock
+```
+
+Abort removes only ephemeral cycle state:
+
+```bash
+python .specify/powerpack/bin/full_cycle.py abort --feature-dir <SPEC_DIR>
+```
+
+SPEC artifacts, implementation changes, receipts and review findings are preserved.
+
+## Completion
+
+`DONE` means the same SPEC converges with implementation and `speckit-implement-review` approves the current snapshot. It does NOT mean a GitHub PR is approved, ready or merged.
+
+Report SPEC, phases/receipts, convergence and review rounds, gates, relevant task/finding IDs, unresolved blockers and final HEAD when Git is available.
