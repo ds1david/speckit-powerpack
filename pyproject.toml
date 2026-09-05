@@ -11,10 +11,9 @@ requires-python = ">=3.11"
 license = "MIT"
 authors = [{name = "David Oliveira"}]
 keywords = ["spec-kit", "sdd", "claude-code", "codex", "code-review"]
-dependencies = []
+dependencies = ["playwright>=1.55,<2"]
 
 [project.optional-dependencies]
-review-web = ["playwright>=1.55,<2"]
 dev = ["pytest>=8,<9", "build>=1.2,<2"]
 
 [project.urls]
