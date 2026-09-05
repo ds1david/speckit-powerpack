@@ -68,7 +68,8 @@ def ensure_specify(install: bool) -> str:
     uv = shutil.which("uv")
     if not uv:
         raise PowerPackError("uv is required to bootstrap official Spec Kit.")
-    run([uv, "tool", "install", "specify-cli", "--from", f"git+{SPECKIT_REPO}@{SPECKIT_TESTED_TAG}"])
+    # uv tool install accepts a Git source directly as PACKAGE.
+    run([uv, "tool", "install", f"git+{SPECKIT_REPO}@{SPECKIT_TESTED_TAG}"])
     binary = shutil.which("specify")
     if not binary:
         raise PowerPackError("Spec Kit was installed but 'specify' is not visible on PATH yet.")
@@ -364,21 +365,32 @@ def cmd_update(args: argparse.Namespace) -> None:
         return
 
     applied = apply_self_update(repository, ref)
+    project_refreshed = False
     if cfg.get("project_refresh", True) and (project / ".specify").is_dir():
         binary = shutil.which("speckit-powerpack")
         if not binary:
             raise PowerPackError("CLI update succeeded but updated executable is not visible on PATH.")
-        argv = [binary, "install", str(project), "--integration", integration, "--no-update-check"]
+        argv = [
+            binary,
+            "update",
+            str(project),
+            "--project-only",
+            "--force",
+            "--yes",
+            "--integration",
+            integration,
+        ]
         if args.bootstrap_speckit:
             argv.append("--bootstrap-speckit")
         if args.reset_config:
-            argv.extend(["--reset-config", "--yes-update"])
+            argv.append("--reset-config")
         env = dict(os.environ)
         env["SPECKIT_POWERPACK_SKIP_UPDATE_CHECK"] = "1"
         proc = subprocess.run(argv, text=True, env=env)
         if proc.returncode != 0:
-            raise PowerPackError("CLI updated, but project refresh failed; rerun 'speckit-powerpack install .' manually.")
-    print(json.dumps({**applied, "project_refreshed": (project / ".specify").is_dir()}, ensure_ascii=False, indent=2))
+            raise PowerPackError("CLI updated, but project refresh failed; rerun 'speckit-powerpack update . --project-only --force --yes' manually.")
+        project_refreshed = True
+    print(json.dumps({**applied, "project_refreshed": project_refreshed}, ensure_ascii=False, indent=2))
 
 
 def cmd_doctor(args: argparse.Namespace) -> None:
@@ -491,7 +503,6 @@ def cmd_project_use(args: argparse.Namespace) -> None:
 def add_install_update_flags(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--no-update-check", action="store_true")
     parser.add_argument("--yes-update", action="store_true", help="Confirm an installer-triggered CLI update non-interactively")
-    parser.add_argument("--reset-config", action="store_true", help=argparse.SUPPRESS)
 
 
 def build_parser() -> argparse.ArgumentParser:
