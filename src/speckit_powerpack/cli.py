@@ -5,6 +5,7 @@ from importlib import resources
 import json
 import os
 from pathlib import Path
+import platform as platform_module
 import shutil
 import subprocess
 import sys
@@ -82,7 +83,12 @@ def install_support(project: Path, integration: str) -> None:
             "implement-review": [{"step": "implement", "statuses": ["COMPLETED"]}]
         }
     })
-    write_json(base / "quality-gates.json", {"schema_version": 1, "policy": "auto-detect", "custom_command": None})
+    write_json(base / "quality-gates.json", {
+        "schema_version": 1,
+        "policy": "auto-detect",
+        "custom_command": None,
+        "unknown_architecture": "block"
+    })
     ignore = base / ".gitignore"
     if not ignore.exists():
         ignore.write_text("runtime/\nreviews.local.json\nauth/\n*.local.json\n", encoding="utf-8")
@@ -108,8 +114,36 @@ def install_powerpack(path: str, integration: str, *, initialize: bool, bootstra
     install_components(project, specify)
 
 
+def platform_key(system: str | None = None) -> str:
+    value = (system or platform_module.system()).strip().lower()
+    if value.startswith("win"):
+        return "windows"
+    if value in {"darwin", "mac", "macos"}:
+        return "macos"
+    if value == "linux":
+        return "linux"
+    return "other"
+
+
+def default_config_base(*, system: str | None = None, env: dict[str, str] | None = None, home: Path | None = None) -> Path:
+    values = env if env is not None else os.environ
+    user_home = home or Path.home()
+    if values.get("XDG_CONFIG_HOME"):
+        return Path(values["XDG_CONFIG_HOME"]).expanduser()
+    current = platform_key(system)
+    if current == "windows":
+        if values.get("APPDATA"):
+            return Path(values["APPDATA"]).expanduser()
+        if values.get("LOCALAPPDATA"):
+            return Path(values["LOCALAPPDATA"]).expanduser()
+        return user_home / "AppData" / "Roaming"
+    if current == "macos":
+        return user_home / "Library" / "Application Support"
+    return user_home / ".config"
+
+
 def global_root() -> Path:
-    root = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "speckit-powerpack"
+    root = default_config_base() / "speckit-powerpack"
     root.mkdir(parents=True, exist_ok=True)
     if os.name != "nt":
         root.chmod(0o700)
@@ -184,6 +218,8 @@ def cmd_doctor(args: argparse.Namespace) -> None:
         "claude": bool(shutil.which("claude")),
         "codex": bool(shutil.which("codex")),
     }
+    print(f"Platform: {platform_key()} ({platform_module.system()})")
+    print(f"Config:   {global_root()}")
     for key, ok in checks.items():
         print(f"{'OK' if ok else 'FAIL':4} {key}")
     if not all(checks[name] for name in ("specify", "spec-kit-project", "powerpack-runtime")):
