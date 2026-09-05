@@ -8,32 +8,34 @@ import sys
 sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 
 from speckit_powerpack import cli
+from speckit_powerpack import cli_account_binding as account_cli
 from speckit_powerpack import review_onboarding as onboarding
 
 
-def test_consent_page_discloses_isolated_profile_and_exact_project(tmp_path: Path):
-    profile_dir = tmp_path / "profiles" / "linux" / "atsel"
-    html = onboarding.consent_html(
-        profile="atsel",
-        project_alias="atsel-project",
-        project_url="https://chatgpt.com/g/g-p-demo/project",
+def test_account_consent_page_discloses_isolated_profile_and_account_scope(tmp_path: Path):
+    profile_dir = tmp_path / "browser-profiles" / "linux" / "ds1david"
+    html = onboarding.account_consent_html(
+        profile="ds1david",
+        account_label="ds1david-plus",
         profile_dir=profile_dir,
     )
-    assert "Autorizar acesso do PowerPack ao ChatGPT Web?" in html
+    assert "Autorizar esta conta ChatGPT para reviews Web?" in html
     assert "Não reutiliza cookies, histórico ou sessão do Edge/Chrome" in html
+    assert "não de um Project específico" in html
+    assert "duas assinaturas/contas" in html
     assert str(profile_dir) in html
-    assert "atsel-project" in html
-    assert "https://chatgpt.com/g/g-p-demo/project" in html
-    assert "Conceder acesso ao projeto" in html
+    assert "ds1david-plus" in html
+    assert "Conceder acesso à conta" in html
 
 
-def test_exact_project_match_allows_query_but_rejects_login_or_other_project():
+def test_project_url_helpers_accept_project_and_reject_non_chatgpt():
     requested = "https://chatgpt.com/g/g-p-demo/project"
+    assert onboarding.is_chatgpt_project_url(requested) is True
     assert onboarding.same_chatgpt_project(requested, requested) is True
     assert onboarding.same_chatgpt_project(requested + "?foo=bar", requested) is True
-    assert onboarding.same_chatgpt_project("https://chatgpt.com/auth/login", requested) is False
+    assert onboarding.is_chatgpt_project_url("https://chatgpt.com/auth/login") is False
     assert onboarding.same_chatgpt_project("https://chatgpt.com/g/g-p-other/project", requested) is False
-    assert onboarding.same_chatgpt_project("https://example.com/g/g-p-demo/project", requested) is False
+    assert onboarding.is_chatgpt_project_url("https://example.com/g/g-p-demo/project") is False
 
 
 def test_chromium_install_uses_cli_and_writes_versioned_receipt(tmp_path: Path, monkeypatch):
@@ -71,103 +73,139 @@ def test_browser_receipt_becomes_stale_when_playwright_version_changes(tmp_path:
     assert onboarding.browser_install_ready(tmp_path, "linux") is False
 
 
-def test_cli_registers_single_command_authorization_flow():
-    args = cli.build_parser().parse_args([
-        "review",
-        "authorize",
-        "--profile", "atsel",
-        "--project", "atsel",
-        "--url", "https://chatgpt.com/g/g-p-demo/project",
-        "--path", ".",
+def test_entrypoint_registers_account_auth_project_discovery_and_strict_doctor():
+    parser = account_cli.build_parser()
+    auth = parser.parse_args([
+        "review", "auth", "authorize", "ds1david", "--account-label", "owner-plus",
     ])
-    assert args.func is cli.cmd_review_authorize
-    assert args.profile == "atsel"
-    assert args.project == "atsel"
+    assert auth.func is account_cli.cmd_auth_authorize
+    assert auth.profile == "ds1david"
+    assert auth.account_label == "owner-plus"
+
+    project = parser.parse_args([
+        "review", "project", "select", "--profile", "webflow", "--index", "2", "--path", ".",
+    ])
+    assert project.func is account_cli.cmd_project_select
+    assert project.profile == "webflow"
+    assert project.index == 2
+
+    doctor = parser.parse_args(["doctor", ".", "--strict-review"])
+    assert doctor.func is account_cli.cmd_doctor
+    assert doctor.strict_review is True
 
 
-def test_browser_readiness_does_not_start_playwright_connection(tmp_path: Path, monkeypatch):
-    monkeypatch.setattr(cli, "playwright_package_ready", lambda: True)
-    monkeypatch.setattr(cli, "global_root", lambda: tmp_path)
-    monkeypatch.setattr(cli, "platform_key", lambda: "linux")
-    monkeypatch.setattr(cli, "browser_install_ready", lambda root, platform: (root, platform) == (tmp_path, "linux"))
-    assert cli.playwright_browser_ready() is True
+def test_legacy_project_scoped_authorize_is_deprecated():
+    args = account_cli.build_parser().parse_args([
+        "review", "authorize",
+        "--profile", "atsel", "--project", "atsel",
+        "--url", "https://chatgpt.com/g/g-p-demo/project",
+    ])
+    assert args.func is account_cli.cmd_legacy_authorize_deprecated
 
 
-def test_authorization_persists_platform_profile_and_project_binding(tmp_path: Path, monkeypatch):
-    global_path = tmp_path / "global.json"
-    project = tmp_path / "project"
+def _prepare_account_state(tmp_path: Path, monkeypatch):
+    config_path = tmp_path / "config.json"
+    state: dict = {
+        "schema_version": 3,
+        "active_profiles": {"linux": "ds1david"},
+        "accounts": {
+            "linux": {
+                "ds1david": {
+                    "source": account_cli.ACCOUNT_AUTH_SOURCE,
+                    "account_label": "owner-plus",
+                    "profile_dir": str(tmp_path / "profiles" / "ds1david"),
+                },
+                "webflow": {
+                    "source": account_cli.ACCOUNT_AUTH_SOURCE,
+                    "account_label": "shared-plus",
+                    "profile_dir": str(tmp_path / "profiles" / "webflow"),
+                },
+            }
+        },
+        "projects": {},
+    }
+    for profile in ("ds1david", "webflow"):
+        (tmp_path / "profiles" / profile).mkdir(parents=True, exist_ok=True)
+
+    def global_config():
+        return config_path, state
+
+    def save_global(path: Path, data: dict):
+        state.clear()
+        state.update(json.loads(json.dumps(data)))
+        path.write_text(json.dumps(data), encoding="utf-8")
+
+    monkeypatch.setattr(cli, "global_config", global_config)
+    monkeypatch.setattr(cli, "save_global", save_global)
+    monkeypatch.setattr(account_cli.core, "global_config", global_config)
+    monkeypatch.setattr(account_cli.core, "save_global", save_global)
+    monkeypatch.setattr(account_cli.core, "platform_key", lambda *args, **kwargs: "linux")
+    monkeypatch.setattr(account_cli.core, "profile_dir", lambda name, **kwargs: tmp_path / "profiles" / name)
+    return state
+
+
+def test_same_project_can_bind_owner_and_shared_account(tmp_path: Path, monkeypatch):
+    state = _prepare_account_state(tmp_path, monkeypatch)
+    project = tmp_path / "repo"
     review_path = project / ".specify" / "powerpack" / "review.json"
     review_path.parent.mkdir(parents=True)
     review_path.write_text(json.dumps({"chatgpt_web": {"required": True, "enabled": True}}), encoding="utf-8")
+    candidate = onboarding.ProjectCandidate("ATSEL", "https://chatgpt.com/g/g-p-demo/project")
 
-    monkeypatch.setattr(cli, "global_config", lambda: (global_path, {}))
+    account_cli._persist_binding(alias="atsel", candidate=candidate, profile="ds1david", project_path=project)
+    account_cli._persist_binding(alias="atsel", candidate=candidate, profile="webflow", project_path=project)
 
-    def save_global(path: Path, data: dict):
-        path.write_text(json.dumps(data), encoding="utf-8")
+    bindings = state["projects"]["atsel"]["bindings"]["linux"]
+    assert set(bindings) == {"ds1david", "webflow"}
+    assert bindings["ds1david"]["account_label"] == "owner-plus"
+    assert bindings["webflow"]["account_label"] == "shared-plus"
 
-    monkeypatch.setattr(cli, "save_global", save_global)
-
-    result = onboarding.ReviewAuthorizationResult(
-        granted=True,
-        profile="atsel",
-        project_alias="atsel-project",
-        project_url="https://chatgpt.com/g/g-p-demo/project",
-        platform="linux",
-        profile_dir="/tmp/powerpack-profile",
-        granted_at="2026-09-05T22:00:00+00:00",
-    )
-    cli._write_authorized_project(result=result, project_path=project)
-
-    global_data = json.loads(global_path.read_text(encoding="utf-8"))
-    assert global_data["active_profiles"]["linux"] == "atsel"
-    assert global_data["authenticated_profiles"]["linux"]["atsel"]["source"] == "playwright-consent"
-    assert global_data["authorizations"]["linux"]["atsel"]["scope"] == "chatgpt-web-review"
-    assert global_data["projects"]["atsel-project"]["bindings"]["linux"]["profile"] == "atsel"
-
-    review = json.loads(review_path.read_text(encoding="utf-8"))
-    web = review["chatgpt_web"]
-    assert web["required"] is True
-    assert web["enabled"] is True
-    assert web["project_alias"] == "atsel-project"
-    assert web["profile"] == "atsel"
-    assert web["profile_platform"] == "linux"
-    assert web["authorization"] == "playwright-consent"
+    review = json.loads(review_path.read_text(encoding="utf-8"))["chatgpt_web"]
+    assert review["profile"] == "webflow"
+    assert review["account_label"] == "shared-plus"
+    assert review["authorization"] == account_cli.PROJECT_BINDING_AUTH
 
 
-def test_legacy_login_and_binding_do_not_satisfy_mandatory_consent(tmp_path: Path, monkeypatch):
-    project = tmp_path / "project"
+def test_review_readiness_is_bound_to_selected_account_identity(tmp_path: Path, monkeypatch):
+    state = _prepare_account_state(tmp_path, monkeypatch)
+    project = tmp_path / "repo"
     review_path = project / ".specify" / "powerpack" / "review.json"
     review_path.parent.mkdir(parents=True)
-    review_path.write_text(json.dumps({
-        "chatgpt_web": {
-            "required": True,
-            "enabled": True,
-            "project_alias": "atsel",
-            "project_url": "https://chatgpt.com/g/g-p-demo/project",
-            "profile": "atsel",
-            "authorization": None,
-        }
-    }), encoding="utf-8")
-    profile_path = tmp_path / "profiles" / "atsel"
-    profile_path.mkdir(parents=True)
+    candidate = onboarding.ProjectCandidate("ATSEL", "https://chatgpt.com/g/g-p-demo/project")
+    review_path.write_text(json.dumps({"chatgpt_web": {"required": True, "enabled": True}}), encoding="utf-8")
 
-    monkeypatch.setattr(cli, "global_root", lambda: tmp_path)
-    monkeypatch.setattr(cli, "platform_key", lambda *args, **kwargs: "linux")
-    monkeypatch.setattr(cli, "profile_dir", lambda name, **kwargs: profile_path)
-    monkeypatch.setattr(cli, "playwright_package_ready", lambda: True)
-    monkeypatch.setattr(cli, "playwright_browser_ready", lambda: True)
-    monkeypatch.setattr(cli, "global_config", lambda: (
-        tmp_path / "config.json",
-        {
-            "authenticated_profiles": {"linux": {"atsel": {"confirmed": True, "source": "legacy-login"}}},
-            "projects": {"atsel": {"bindings": {"linux": {
-                "profile": "atsel",
-                "url": "https://chatgpt.com/g/g-p-demo/project",
-                "authorization": "legacy",
-            }}}},
-        },
-    ))
+    account_cli._persist_binding(alias="atsel", candidate=candidate, profile="ds1david", project_path=project)
+    monkeypatch.setattr(account_cli.core, "playwright_package_ready", lambda: True)
+    monkeypatch.setattr(account_cli.core, "playwright_browser_ready", lambda: True)
 
-    readiness = cli.review_readiness(project)
-    assert readiness["chatgpt-authenticated"] is False
+    readiness = account_cli.review_readiness(project)
+    assert readiness["chatgpt-account-authenticated"] is True
+    assert readiness["chatgpt-project-bound"] is True
+
+    review = json.loads(review_path.read_text(encoding="utf-8"))
+    review["chatgpt_web"]["profile"] = "webflow"
+    review_path.write_text(json.dumps(review), encoding="utf-8")
+    readiness = account_cli.review_readiness(project)
+    assert readiness["chatgpt-account-authenticated"] is True
     assert readiness["chatgpt-project-bound"] is False
+
+
+def test_project_use_requires_explicit_profile_when_same_project_has_two_accounts(tmp_path: Path, monkeypatch):
+    state = _prepare_account_state(tmp_path, monkeypatch)
+    state["active_profiles"]["linux"] = "other"
+    registered = {
+        "bindings": {
+            "linux": {
+                "ds1david": {"profile": "ds1david", "url": "https://chatgpt.com/g/g-p-demo/project"},
+                "webflow": {"profile": "webflow", "url": "https://chatgpt.com/g/g-p-demo/project"},
+            }
+        }
+    }
+    try:
+        account_cli._select_binding(registered, "linux", None)
+    except cli.PowerPackError as exc:
+        assert "--profile" in str(exc)
+        assert "ds1david" in str(exc)
+        assert "webflow" in str(exc)
+    else:
+        raise AssertionError("multiple account bindings should require an explicit profile when no active match exists")
