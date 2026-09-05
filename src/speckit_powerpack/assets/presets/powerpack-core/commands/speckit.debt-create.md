@@ -8,11 +8,13 @@ Use this command to record deliberate technical debt. Do not use it to make an a
 
 ## Policy sources
 
-1. Read `docs/TECHNICAL_DEBT.md` from the installed PowerPack documentation when available, or the project-local copy/reference configured by PowerPack.
-2. Read `.specify/powerpack/technical-debt.json`.
-3. Read every existing project policy listed in `project_policy_paths`.
+Read, in order:
 
-The PowerPack policy is the minimum floor. Project policy may be stricter but MUST NOT weaken it.
+1. `.specify/powerpack/technical-debt-policy.md` — immutable PowerPack safety floor for this installation;
+2. `.specify/powerpack/technical-debt.json` — backlog path, prefix and project-policy references;
+3. every existing project policy listed in `project_policy_paths`.
+
+The effective policy is cumulative. Project policy may be stricter or add domain-specific ownership/fields, but MUST NOT weaken the PowerPack floor. If policies conflict, apply the stricter rule and report the conflict.
 
 ## Mandatory creation gate
 
@@ -36,7 +38,7 @@ Prefer one coherent capability over multiple near-duplicate debt entries. Never 
 
 ## Write contract
 
-Resolve `backlog_path` and `id_prefix` from `.specify/powerpack/technical-debt.json`. If the backlog does not exist, create a minimal governed backlog with the PowerPack marker and no project-specific assumptions.
+Resolve `backlog_path` and `id_prefix` from `.specify/powerpack/technical-debt.json`. If the backlog does not exist, create a minimal governed backlog with the PowerPack policy marker and no project-specific assumptions.
 
 Allocate the next stable sequential ID for the configured prefix. Never reuse or renumber IDs.
 
