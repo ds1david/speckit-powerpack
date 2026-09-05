@@ -16,7 +16,8 @@
     "sandbox": "read-only"
   },
   "chatgpt_web": {
-    "enabled": false,
+    "required": true,
+    "enabled": true,
     "mode": "assisted",
     "project_alias": null,
     "project_url": null,
