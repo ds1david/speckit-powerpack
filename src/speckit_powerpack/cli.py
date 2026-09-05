@@ -34,6 +34,30 @@ def asset(relative: str):
     return resources.as_file(resources.files("speckit_powerpack").joinpath("assets", relative))
 
 
+def platform_key(system: str | None = None) -> str:
+    value = (system or platform_module.system()).strip().lower()
+    if value.startswith("win"):
+        return "windows"
+    if value in {"darwin", "mac", "macos"}:
+        return "macos"
+    if value == "linux":
+        return "linux"
+    return "other"
+
+
+def default_config_base(*, system: str | None = None, env: dict[str, str] | None = None, home: Path | None = None) -> Path:
+    values = env if env is not None else os.environ
+    user_home = home or Path.home()
+    if values.get("XDG_CONFIG_HOME"):
+        return Path(values["XDG_CONFIG_HOME"]).expanduser()
+    current = platform_key(system)
+    if current == "windows":
+        return Path(values.get("APPDATA") or values.get("LOCALAPPDATA") or (user_home / "AppData" / "Roaming")).expanduser()
+    if current == "macos":
+        return user_home / "Library" / "Application Support"
+    return user_home / ".config"
+
+
 def ensure_specify(install: bool) -> str:
     binary = shutil.which("specify")
     if binary:
@@ -61,13 +85,18 @@ def write_json(path: Path, data: Any, *, overwrite: bool = False, mode: int | No
 
 def install_support(project: Path, integration: str) -> None:
     base = project / ".specify" / "powerpack"
-    base.mkdir(parents=True, exist_ok=True)
-    with asset("runtime/powerpack_runtime.py") as source:
-        dest = base / "bin" / "powerpack.py"
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, dest)
-        if os.name != "nt":
-            dest.chmod(0o755)
+    bin_dir = base / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    runtime_assets = {
+        "runtime/powerpack_runtime.py": "powerpack.py",
+        "runtime/powerpack_capabilities.py": "capabilities.py",
+    }
+    for source_name, dest_name in runtime_assets.items():
+        with asset(source_name) as source:
+            dest = bin_dir / dest_name
+            shutil.copy2(source, dest)
+            if os.name != "nt":
+                dest.chmod(0o755)
     with asset("config/default-model-routing.json") as source:
         routing = json.loads(source.read_text(encoding="utf-8"))
     routing["active_integration"] = integration
@@ -80,14 +109,15 @@ def install_support(project: Path, integration: str) -> None:
         "mode": "strict",
         "steps": {
             "checklist-converge": [{"step": "checklist", "statuses": ["COMPLETED"]}],
-            "implement-review": [{"step": "implement", "statuses": ["COMPLETED"]}]
-        }
+            "implement-review": [{"step": "implement", "statuses": ["COMPLETED"]}],
+        },
     })
     write_json(base / "quality-gates.json", {
         "schema_version": 1,
-        "policy": "auto-detect",
+        "policy": "capability-strategy",
         "custom_command": None,
-        "unknown_architecture": "block"
+        "unknown_architecture": "block",
+        "ambiguous_architecture": "block",
     })
     ignore = base / ".gitignore"
     if not ignore.exists():
@@ -112,34 +142,6 @@ def install_powerpack(path: str, integration: str, *, initialize: bool, bootstra
         raise PowerPackError("Target is not an initialized Spec Kit project.")
     install_support(project, integration)
     install_components(project, specify)
-
-
-def platform_key(system: str | None = None) -> str:
-    value = (system or platform_module.system()).strip().lower()
-    if value.startswith("win"):
-        return "windows"
-    if value in {"darwin", "mac", "macos"}:
-        return "macos"
-    if value == "linux":
-        return "linux"
-    return "other"
-
-
-def default_config_base(*, system: str | None = None, env: dict[str, str] | None = None, home: Path | None = None) -> Path:
-    values = env if env is not None else os.environ
-    user_home = home or Path.home()
-    if values.get("XDG_CONFIG_HOME"):
-        return Path(values["XDG_CONFIG_HOME"]).expanduser()
-    current = platform_key(system)
-    if current == "windows":
-        if values.get("APPDATA"):
-            return Path(values["APPDATA"]).expanduser()
-        if values.get("LOCALAPPDATA"):
-            return Path(values["LOCALAPPDATA"]).expanduser()
-        return user_home / "AppData" / "Roaming"
-    if current == "macos":
-        return user_home / "Library" / "Application Support"
-    return user_home / ".config"
 
 
 def global_root() -> Path:
@@ -211,10 +213,12 @@ def cmd_install(args: argparse.Namespace) -> None:
 def cmd_doctor(args: argparse.Namespace) -> None:
     project = Path(args.path).resolve()
     runtime = project / ".specify" / "powerpack" / "bin" / "powerpack.py"
+    capabilities = runtime.with_name("capabilities.py")
     checks = {
         "specify": bool(shutil.which("specify")),
         "spec-kit-project": (project / ".specify").is_dir(),
         "powerpack-runtime": runtime.is_file(),
+        "capability-resolver": capabilities.is_file(),
         "claude": bool(shutil.which("claude")),
         "codex": bool(shutil.which("codex")),
     }
@@ -222,7 +226,7 @@ def cmd_doctor(args: argparse.Namespace) -> None:
     print(f"Config:   {global_root()}")
     for key, ok in checks.items():
         print(f"{'OK' if ok else 'FAIL':4} {key}")
-    if not all(checks[name] for name in ("specify", "spec-kit-project", "powerpack-runtime")):
+    if not all(checks[name] for name in ("specify", "spec-kit-project", "powerpack-runtime", "capability-resolver")):
         raise PowerPackError("Required installation checks failed.")
 
 
@@ -235,7 +239,9 @@ def cmd_review_setup(args: argparse.Namespace) -> None:
 
 def cmd_auth_login(args: argparse.Namespace) -> None:
     browser_action(args.profile, "https://chatgpt.com/", "ChatGPT login")
-    path, data = global_config(); data["active_profile"] = args.profile; save_global(path, data)
+    path, data = global_config()
+    data["active_profile"] = args.profile
+    save_global(path, data)
 
 
 def cmd_auth_logout(args: argparse.Namespace) -> None:
