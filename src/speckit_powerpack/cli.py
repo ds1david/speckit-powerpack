@@ -90,6 +90,7 @@ def install_support(project: Path, integration: str) -> None:
     runtime_assets = {
         "runtime/powerpack_runtime.py": "powerpack.py",
         "runtime/powerpack_capabilities.py": "capabilities.py",
+        "runtime/powerpack_review_protocol.py": "review_protocol.py",
     }
     for source_name, dest_name in runtime_assets.items():
         with asset(source_name) as source:
@@ -97,6 +98,8 @@ def install_support(project: Path, integration: str) -> None:
             shutil.copy2(source, dest)
             if os.name != "nt":
                 dest.chmod(0o755)
+    with asset("review/deep-review-protocol.md") as source:
+        shutil.copy2(source, base / "deep-review-protocol.md")
     with asset("config/default-model-routing.json") as source:
         routing = json.loads(source.read_text(encoding="utf-8"))
     routing["active_integration"] = integration
@@ -104,6 +107,9 @@ def install_support(project: Path, integration: str) -> None:
     with asset("config/default-review.json") as source:
         review = json.loads(source.read_text(encoding="utf-8"))
     write_json(base / "review.json", review)
+    with asset("config/default-technical-debt.json") as source:
+        debt = json.loads(source.read_text(encoding="utf-8"))
+    write_json(base / "technical-debt.json", debt)
     write_json(base / "prerequisites.json", {
         "schema_version": 1,
         "mode": "strict",
@@ -152,25 +158,51 @@ def global_root() -> Path:
     return root
 
 
+def _migrate_global_config(data: dict[str, Any], *, current_platform: str) -> dict[str, Any]:
+    data.setdefault("schema_version", 2)
+    active_profiles = data.setdefault("active_profiles", {})
+    legacy_active = data.pop("active_profile", None)
+    if legacy_active and current_platform not in active_profiles:
+        active_profiles[current_platform] = legacy_active
+
+    projects = data.setdefault("projects", {})
+    for alias, value in list(projects.items()):
+        if not isinstance(value, dict):
+            continue
+        if "bindings" in value:
+            value.setdefault("bindings", {})
+            continue
+        if value.get("url") and value.get("profile"):
+            projects[alias] = {
+                "bindings": {
+                    current_platform: {
+                        "url": value["url"],
+                        "profile": value["profile"],
+                    }
+                }
+            }
+    return data
+
+
 def global_config() -> tuple[Path, dict[str, Any]]:
     path = global_root() / "config.json"
     data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
-    data.setdefault("active_profile", None)
-    data.setdefault("projects", {})
-    return path, data
+    return path, _migrate_global_config(data, current_platform=platform_key())
 
 
 def save_global(path: Path, data: dict[str, Any]) -> None:
     write_json(path, data, overwrite=True, mode=0o600)
 
 
-def profile_dir(name: str) -> Path:
+def profile_dir(name: str, *, system: str | None = None, create: bool = True) -> Path:
     if not name or any(ch not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_" for ch in name):
         raise PowerPackError("Profile names may contain only letters, digits, '-' and '_'.")
-    path = global_root() / "browser-profiles" / name
-    path.mkdir(parents=True, exist_ok=True)
-    if os.name != "nt":
-        path.chmod(0o700)
+    namespace = platform_key(system)
+    path = global_root() / "browser-profiles" / namespace / name
+    if create:
+        path.mkdir(parents=True, exist_ok=True)
+        if os.name != "nt":
+            path.chmod(0o700)
     return path
 
 
@@ -184,11 +216,12 @@ def ensure_playwright() -> None:
 def browser_action(profile: str, url: str, purpose: str) -> None:
     ensure_playwright()
     from playwright.sync_api import sync_playwright
+    current = platform_key()
     with sync_playwright() as p:
         context = p.chromium.launch_persistent_context(str(profile_dir(profile)), headless=False)
         page = context.pages[0] if context.pages else context.new_page()
         page.goto(url, wait_until="domcontentloaded")
-        print(f"Browser opened for {purpose}. Enter credentials/MFA only in the browser.")
+        print(f"Browser opened for {purpose} using {current} profile '{profile}'. Enter credentials/MFA only in the browser.")
         input("Press Enter after completing the browser action: ")
         context.close()
 
@@ -214,11 +247,13 @@ def cmd_doctor(args: argparse.Namespace) -> None:
     project = Path(args.path).resolve()
     runtime = project / ".specify" / "powerpack" / "bin" / "powerpack.py"
     capabilities = runtime.with_name("capabilities.py")
+    review_protocol = runtime.with_name("review_protocol.py")
     checks = {
         "specify": bool(shutil.which("specify")),
         "spec-kit-project": (project / ".specify").is_dir(),
         "powerpack-runtime": runtime.is_file(),
         "capability-resolver": capabilities.is_file(),
+        "review-protocol-validator": review_protocol.is_file(),
         "claude": bool(shutil.which("claude")),
         "codex": bool(shutil.which("codex")),
     }
@@ -226,7 +261,8 @@ def cmd_doctor(args: argparse.Namespace) -> None:
     print(f"Config:   {global_root()}")
     for key, ok in checks.items():
         print(f"{'OK' if ok else 'FAIL':4} {key}")
-    if not all(checks[name] for name in ("specify", "spec-kit-project", "powerpack-runtime", "capability-resolver")):
+    required = ("specify", "spec-kit-project", "powerpack-runtime", "capability-resolver", "review-protocol-validator")
+    if not all(checks[name] for name in required):
         raise PowerPackError("Required installation checks failed.")
 
 
@@ -240,7 +276,7 @@ def cmd_review_setup(args: argparse.Namespace) -> None:
 def cmd_auth_login(args: argparse.Namespace) -> None:
     browser_action(args.profile, "https://chatgpt.com/", "ChatGPT login")
     path, data = global_config()
-    data["active_profile"] = args.profile
+    data.setdefault("active_profiles", {})[platform_key()] = args.profile
     save_global(path, data)
 
 
@@ -249,33 +285,61 @@ def cmd_auth_logout(args: argparse.Namespace) -> None:
 
 
 def cmd_auth_forget(args: argparse.Namespace) -> None:
-    path = profile_dir(args.profile)
+    current = platform_key()
+    path = profile_dir(args.profile, create=False)
     if path.exists():
         shutil.rmtree(path)
     cfg_path, data = global_config()
-    if data.get("active_profile") == args.profile:
-        data["active_profile"] = None
+    if data.setdefault("active_profiles", {}).get(current) == args.profile:
+        data["active_profiles"].pop(current, None)
     save_global(cfg_path, data)
 
 
 def cmd_project_bind(args: argparse.Namespace) -> None:
     cfg_path, data = global_config()
-    profile = args.profile or data.get("active_profile")
+    current = platform_key()
+    profile = args.profile or data.setdefault("active_profiles", {}).get(current)
     if not profile:
-        raise PowerPackError("Login/select a browser profile first.")
-    data["projects"][args.alias] = {"url": validate_project_url(args.url), "profile": profile}
+        raise PowerPackError(f"Login/select a browser profile for platform '{current}' first.")
+    project = data.setdefault("projects", {}).setdefault(args.alias, {"bindings": {}})
+    bindings = project.setdefault("bindings", {})
+    bindings[current] = {"url": validate_project_url(args.url), "profile": profile}
     save_global(cfg_path, data)
+    print(f"Bound project '{args.alias}' on {current} to profile '{profile}'.")
+
+
+def cmd_project_list(args: argparse.Namespace) -> None:
+    _, data = global_config()
+    current = platform_key()
+    for alias, project in sorted(data.get("projects", {}).items()):
+        bindings = project.get("bindings", {}) if isinstance(project, dict) else {}
+        if args.all_platforms:
+            for platform_name, binding in sorted(bindings.items()):
+                print(f"{alias}: platform={platform_name} profile={binding.get('profile')} url={binding.get('url')}")
+        elif current in bindings:
+            binding = bindings[current]
+            print(f"{alias}: platform={current} profile={binding.get('profile')} url={binding.get('url')}")
 
 
 def cmd_project_use(args: argparse.Namespace) -> None:
     project = Path(args.path).resolve()
     _, global_data = global_config()
-    if args.alias not in global_data.get("projects", {}):
+    current = platform_key()
+    registered = global_data.get("projects", {}).get(args.alias)
+    if not isinstance(registered, dict):
         raise PowerPackError(f"Unknown project alias: {args.alias}")
+    binding = registered.get("bindings", {}).get(current)
+    if not binding:
+        raise PowerPackError(f"Project alias '{args.alias}' has no ChatGPT binding for platform '{current}'. Bind it on this platform first.")
     review_path = project / ".specify" / "powerpack" / "review.json"
     review = json.loads(review_path.read_text(encoding="utf-8"))
-    review["chatgpt_web"]["enabled"] = True
-    review["chatgpt_web"]["project_alias"] = args.alias
+    web = review.setdefault("chatgpt_web", {})
+    web["enabled"] = True
+    web["project_alias"] = args.alias
+    web["project_url"] = binding["url"]
+    web["profile"] = binding["profile"]
+    web["profile_scope"] = "platform"
+    web["profile_platform"] = current
     write_json(review_path, review, overwrite=True)
 
 
@@ -294,6 +358,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = asub.add_parser("forget"); p.add_argument("profile"); p.set_defaults(func=cmd_auth_forget)
     project = rsub.add_parser("project"); psub = project.add_subparsers(dest="project_cmd", required=True)
     p = psub.add_parser("bind"); p.add_argument("alias"); p.add_argument("url"); p.add_argument("--profile"); p.set_defaults(func=cmd_project_bind)
+    p = psub.add_parser("list"); p.add_argument("--all-platforms", action="store_true"); p.set_defaults(func=cmd_project_list)
     p = psub.add_parser("use"); p.add_argument("alias"); p.add_argument("--path", default="."); p.set_defaults(func=cmd_project_use)
     return parser
 
