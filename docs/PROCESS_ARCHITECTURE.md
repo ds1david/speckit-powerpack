@@ -11,12 +11,12 @@ PowerPack workflow contract
         ↓
 capability / state / evidence runtime
         ↓
-Spec Kit primitive / reviewer / external gate
+Spec Kit primitive / Sol reviewer / mandatory Web gate
         ↓
 auditable result
 ```
 
-OS, language, framework, IDE and build-tool differences must be resolved behind capabilities/configuration rather than embedded as branches in workflow skills.
+OS, language, framework, IDE and build-tool differences are resolved behind capabilities/configuration rather than embedded as workflow branches.
 
 # 1. Package → project → machine layers
 
@@ -27,22 +27,23 @@ flowchart LR
         EXT[powerpack-tools extension]
         CFG[default config assets]
         RT[Python runtime assets]
-        POL[policies / protocols / templates]
+        POL[policies / review protocols]
         CLI[CLI + update_manager.py]
+        ONB[review_onboarding.py]
     end
 
-    subgraph PROJECT[One initialized project]
-        CMD[Spec Kit materialized commands]
+    subgraph PROJECT[Initialized Spec Kit project]
+        CMD[materialized commands/skills]
         PCFG[.specify/powerpack/*.json]
         BIN[.specify/powerpack/bin/*.py]
-        PDOC[installed policies / protocols / template]
-        SPEC[specs/... artifacts + tasks.md]
-        PSTATE[durable state receipts]
-        RSTATE[gitignored execution state]
+        SPEC[specs/... + tasks.md]
+        PSTATE[durable same-SPEC receipts]
+        RSTATE[gitignored resumable state]
     end
 
     subgraph MACHINE[Machine/platform-local state]
-        GCFG[PowerPack global config.json]
+        GCFG[PowerPack config.json]
+        BREC[browser-install/platform.json]
         AUTH[browser-profiles/platform/profile]
         TOOL[uv-managed CLI]
     end
@@ -51,65 +52,59 @@ flowchart LR
     EXT --> CMD
     CFG --> PCFG
     RT --> BIN
-    POL --> PDOC
+    POL --> PCFG
     CLI --> TOOL
+    ONB --> BREC
+    ONB --> AUTH
     CMD --> SPEC
     BIN --> PSTATE
     BIN --> RSTATE
     GCFG --> AUTH
 ```
 
-**Durable customization source:** package source, project `.specify/powerpack` configuration/policies and project-local skills/gates.
-
-**Not a durable customization source:** generated `.claude/skills/*`, `.agents/skills/*` or other materialized agent copies.
+Generated `.claude/skills/*` and `.agents/skills/*` files are materialized views, not the durable customization source.
 
 # 2. End-to-end feature process
 
 ```mermaid
 flowchart TD
-    U[User / agent request] --> ONE[Resolve or create exactly one SPEC]
-    ONE --> FC[full_cycle.py start]
-    FC --> C[clarify]
+    U[User / agent request] --> ONE[Resolve/create exactly one SPEC]
+    ONE --> C[clarify]
     C --> P[plan]
     P --> CK{Checklist applicable?}
     CK -->|yes| K[checklist]
     K --> KC[checklist-converge]
-    CK -->|no| SKIP[Runtime records checklist + checklist-converge skipped]
+    CK -->|no| SKIP[skip checklist + checklist-converge]
     KC --> T[tasks]
     SKIP --> T
     T --> A[analyze]
-    A -->|contradiction| BF[BLOCKED / repair specification artifacts]
-    BF --> A
-    A -->|consistent| I[implement]
+    A -->|owner problem| RET[RETURN to owner stage]
+    RET --> A
+    A -->|clean| I[explicit implement]
 
-    I --> IB[powerpack.py implement begin]
-    IB --> CORE[Official Spec Kit implement]
-    CORE --> IE[powerpack.py implement end]
-    IE --> DELTA[Precise same-SPEC implementation delta/receipt]
+    I --> IB[powerpack implement begin]
+    IB --> CORE[official Spec Kit implement]
+    CORE --> IE[powerpack implement end]
+    IE --> RECEIPT[same-SPEC implement receipt]
+    RECEIPT --> IR[implement-review]
 
-    DELTA --> V[converge]
-    V --> VG{Remaining specified work?}
-    VG -->|yes| VR[full_cycle: needs-implementation]
-    VR --> I
-    VG -->|no| R[implement-review]
-
-    R --> RG{Valid findings?}
-    RG -->|yes| L[Persist every finding in tasks.md]
-    L --> I2[Implement selected/all review batch]
-    I2 --> G[Capability-selected quality gate]
-    G -->|fail/block| I2
-    G -->|pass or N/A| RR[Resolve finding evidence]
-    RR --> R
-    RG -->|no; approved| W{Web gate configured?}
-    W -->|no| DONE[full_cycle DONE]
-    W -->|yes| WEB[ChatGPT Project deep review same HEAD]
+    IR --> READY{doctor / Web consent ready?}
+    READY -->|no| BC[BLOCKED_CONFIGURATION]
+    READY -->|yes| V[converge]
+    V -->|tasks appended| IC[corrective implement]
+    IC --> V
+    V -->|clean| SOL[Sol/xhigh full-snapshot review]
+    SOL -->|findings| L[Persist every finding in tasks.md]
+    L --> IF[Terra/implementer fixes]
+    IF --> V
+    SOL -->|approved| WEB[mandatory ChatGPT Project Web review]
     WEB -->|findings| L
-    WEB -->|approved| DONE
+    WEB -->|approved same snapshot| DONE[COMPLETE]
 ```
 
-The `full_cycle.py` state is authoritative for which phase may execute next. A blocked state requires explicit resume/unblock before another `advance` call.
+There is no top-level `converge` between the initial `implement` and `implement-review`. Convergence is owned by the integrated review stage.
 
-# 3. Full-cycle state machine
+# 3. Top-level full-cycle state machine
 
 ```mermaid
 stateDiagram-v2
@@ -117,228 +112,165 @@ stateDiagram-v2
     Clarify --> Plan
     Plan --> Checklist
     Checklist --> ChecklistConverge: applicable
-    Checklist --> Tasks: NOT_APPLICABLE (both checklist phases skipped)
+    Checklist --> Tasks: not applicable
     ChecklistConverge --> Tasks
     Tasks --> Analyze
     Analyze --> Implement
-    Implement --> Converge
-    Converge --> Implement: needs implementation
-    Converge --> ImplementReview: converged
-    ImplementReview --> Implement: findings
-    ImplementReview --> Done: approved current snapshot
+    Implement --> ImplementReview
+    ImplementReview --> Done: convergence + quality + Sol + Web approved
     Clarify --> Blocked: blocker
     Plan --> Blocked: blocker
     Analyze --> Blocked: blocker
-    Converge --> Blocked: round limit / blocker
-    ImplementReview --> Blocked: round limit / blocker
-    Blocked --> Clarify: resume --unblock when clarify was current
-    Blocked --> Plan: resume --unblock when plan was current
-    Blocked --> Analyze: resume --unblock when analyze was current
-    Blocked --> Converge: resume --unblock when converge was current
-    Blocked --> ImplementReview: resume --unblock when review was current
+    ImplementReview --> Blocked: configuration / decision / budget
 ```
 
-State stores `return_after_implement`, so a correction implementation deterministically returns to either `converge` or `implement_review`.
+The full-cycle runtime controls only top-level phase order. Corrective implementation/convergence and both review gates remain inside `implement_review`.
 
-## Full-cycle file map
+Non-weakenable configuration:
 
-| Concern | Package source | Installed/project location | Customization |
-|---|---|---|---|
-| workflow prompt | `assets/presets/powerpack-core/commands/speckit.full-cycle.md` | materialized by Spec Kit | package change only for generic orchestration semantics |
-| default phases/limits | `assets/config/default-full-cycle.json` | `.specify/powerpack/full-cycle.json` | mode, optional phases, round limits |
-| state machine | `assets/runtime/powerpack_full_cycle.py` | `.specify/powerpack/bin/full_cycle.py` | package-level reusable state semantics only |
-| execution state | runtime-created | `.specify/powerpack/runtime/full-cycle/<spec>.json` | do not hand-edit; use start/status/advance/resume/abort |
+```json
+{
+  "same_spec_only": true,
+  "stop_on_blocked": true,
+  "allow_debt_escape_hatch": false,
+  "explicit_initial_implement_required": true,
+  "implement_review_owns_convergence": true
+}
+```
 
-Non-weakenable config: `same_spec_only=true`, `stop_on_blocked=true`, `allow_debt_escape_hatch=false`.
-
-# 4. Implementation and capability gate
+# 4. Implementation and quality gate
 
 ```mermaid
 flowchart TD
     B[Implement begin] --> S1[Snapshot tracked + untracked content hashes]
     S1 --> SI[Official implementation]
     SI --> S2[Snapshot after]
-    S2 --> D[Changed files attributable to this run]
-    D --> DOC{Docs/non-executable only?}
-    DOC -->|yes| NA[NOT_APPLICABLE]
+    S2 --> D[Files attributable to this run]
+    D --> DOC{Documentation-only?}
+    DOC -->|yes| NA[NOT_APPLICABLE build gate]
     DOC -->|no| CAP[capabilities.py discovery]
     CAP -->|one reproducible strategy| RUN[Execute strategy]
     CAP -->|unknown / ambiguous / missing executable| BLOCK[BLOCKED_CONFIGURATION]
 ```
 
-| Concern | Package source | Installed location | Customization |
-|---|---|---|---|
-| receipts/delta | `assets/runtime/powerpack_runtime.py` | `.specify/powerpack/bin/powerpack.py` | generic package semantics only |
-| capability strategies | `assets/runtime/powerpack_capabilities.py` | `.specify/powerpack/bin/capabilities.py` | add reusable architecture strategies here |
-| project gate override | generated by `cli.py` | `.specify/powerpack/quality-gates.json` | explicit argv `custom_command` |
-
-A project-specific traceability/closure script belongs to the project; PowerPack only needs a generic contract for invoking it when/if a reusable closure-gate mechanism is configured.
+Project-specific closure checks belong in project policy/gates. PowerPack supplies the generic capability contract, not framework-specific assumptions.
 
 # 5. Deep implementation review
 
 ```mermaid
 sequenceDiagram
-    participant I as Implementer/orchestrator
-    participant P as powerpack.py
-    participant R as Independent reviewer
+    participant I as Terra/implementer
+    participant P as PowerPack state runtime
+    participant S as Sol/xhigh reviewer
     participant V as review_protocol.py
     participant T as same-SPEC tasks.md
-    participant C as capabilities.py
-    participant W as ChatGPT Web optional
+    participant W as ChatGPT Project Web
 
-    I->>P: prereq check implement-review
-    P-->>I: same-SPEC implement receipt
-    I->>P: review route/start
-    P-->>I: executor route + current HEAD
-    I->>R: immutable snapshot + deep-review protocol
-    R-->>I: schema 2.0 evidence JSON
-    I->>V: validate (+ previous JSON after first round)
-    alt invalid evidence contract
-        V-->>I: BLOCKED_REVIEW_CONTRACT / BLOCKED_REPEATED_FINDING
-    else findings
-        V-->>I: valid CHANGES_REQUIRED
-        I->>P: ingest
-        P->>T: durable REV-* PENDING
-        I->>P: select batch
-        I->>I: implement selected/all
-        I->>C: gate detect/run
-        C-->>I: pass / N-A / block
-        I->>P: resolve with evidence
-        P->>T: RESOLVED
-        I->>R: fresh full-snapshot review new HEAD
-    else approved
-        alt Web disabled
-            V-->>I: converged
-        else Web enabled
-            I->>W: same HEAD + same protocol
-            W-->>I: evidence JSON
-            I->>V: validate Web result
+    I->>P: verify explicit implement predecessor + readiness
+    P-->>I: same-SPEC receipt + authorized Project/profile
+    I->>I: converge until clean
+    I->>S: immutable current snapshot
+    S-->>I: schema 2.0 evidence JSON
+    I->>V: validate
+    alt Sol findings
+        I->>T: persist REV-* findings
+        I->>I: implement + re-converge + quality gate
+        I->>S: fresh full-snapshot review
+    else Sol approved
+        I->>W: exact same snapshot + same evidence protocol
+        W-->>I: schema 2.0 evidence JSON
+        I->>V: validate
+        alt Web findings
+            I->>T: persist findings
+            I->>I: implement + re-converge + quality gate
+            I->>S: fresh Sol review before Web repeats
+        else Web approved
+            I-->>I: COMPLETE only when both approvals match final snapshot
         end
     end
 ```
 
-## Review file map
+A previous approval becomes stale after any implementation change. No review finding may be converted to technical debt merely to force completion.
 
-| Concern | Package source | Installed/project location | Customization |
-|---|---|---|---|
-| canonical skill | `assets/presets/powerpack-core/commands/speckit.implement-review.md` | materialized command | generic workflow only |
-| runtime routing/findings | `assets/runtime/powerpack_runtime.py` | `.specify/powerpack/bin/powerpack.py` | package state semantics |
-| evidence validator | `assets/runtime/powerpack_review_protocol.py` | `.specify/powerpack/bin/review_protocol.py` | schema evolution at package level |
-| methodology | `assets/review/deep-review-protocol.md` | `.specify/powerpack/deep-review-protocol.md` | project may add stricter domain probes |
-| review config | `assets/config/default-review.json` | `.specify/powerpack/review.json` | modes/Web selection/profile settings |
-| model routing | `assets/config/default-model-routing.json` | `.specify/powerpack/model-routing.json` | stage model mappings; reviewer contract stays independent |
-
-# 6. Platform-scoped ChatGPT Web identity
+# 6. Isolated Playwright Web identity and consent
 
 ```mermaid
 flowchart TD
-    OS{Current platform} -->|Windows| WP[browser-profiles/windows/profile]
-    OS -->|Linux / WSL| LP[browser-profiles/linux/profile]
-    OS -->|macOS| MP[browser-profiles/macos/profile]
-    WP --> WB[alias binding: windows]
-    LP --> LB[alias binding: linux]
-    MP --> MB[alias binding: macos]
-    WB --> USE[review project use]
-    LB --> USE
-    MB --> USE
-    USE --> RJ[project review.json selects current-platform binding]
-    RJ --> WEB[ChatGPT Project Web gate]
+    INSTALL[PowerPack install] --> PWP[Playwright package]
+    PWP --> CH[playwright install chromium]
+    CH --> REC[browser-install/platform receipt]
+    AUTHZ[review authorize] --> CONSENT[PowerPack consent tab]
+    CONSENT -->|cancel| NONE[No grant recorded]
+    CONSENT -->|authorize| PROJ[Open exact ChatGPT Project]
+    PROJ --> LOGIN[User authenticates on chatgpt.com]
+    LOGIN --> GRANT[User returns and grants Project access]
+    GRANT --> PROFILE[Persistent isolated PowerPack profile]
+    GRANT --> BIND[platform/profile/Project playwright-consent binding]
+    BIND --> DOC[doctor READY]
 ```
 
-Implementation is `src/speckit_powerpack/cli.py`. Persistent identity lives outside the repository under the platform-native PowerPack config root. Projects select bindings through CLI commands; they should not copy raw browser profile directories between OSes.
+Machine-local layout:
 
-# 7. Technical-debt governance and lifecycle
+```text
+<global PowerPack config>/
+├── config.json
+├── browser-install/<platform>.json
+└── browser-profiles/
+    ├── windows/<profile>/
+    ├── linux/<profile>/
+    └── macos/<profile>/
+```
+
+The persistent Playwright context deliberately does **not** reuse the default Edge/Chrome profile. WSL uses the Linux namespace even when Windows browsers are already authenticated.
+
+Canonical authorization command:
+
+```bash
+speckit-powerpack review authorize \
+  --profile <profile> \
+  --project <alias> \
+  --url 'https://chatgpt.com/g/g-p-.../project' \
+  --path .
+```
+
+`doctor` requires a matching `playwright-consent` grant. Legacy login/bind state without that grant does not satisfy readiness.
+
+# 7. Technical-debt governance
 
 ```mermaid
 flowchart TD
-    C[Potential deferred work] --> FLOOR[Load PowerPack debt safety floor]
-    FLOOR --> PP[Load stricter project policy paths]
-    PP --> SEM{Semantic creation gate}
-    SEM -->|active SPEC / review / converge / blocker| ND[NOT_DEBT]
-    SEM -->|legitimately deferrable| RT[debt.py create]
-    RT --> MG{Mechanical guards}
-    MG -->|P0 / active obligation / forbidden origin| ND
-    MG -->|duplicate| DUP[DUPLICATE]
-    MG -->|valid| OPEN[OPEN + stable ID + lifecycle]
+    C[Potential deferred work] --> FLOOR[PowerPack debt safety floor + project policy]
+    FLOOR --> SEM{Current obligation/review/convergence/blocker?}
+    SEM -->|yes| ND[NOT_DEBT]
+    SEM -->|legitimately deferrable| OPEN[OPEN + stable ID]
     OPEN --> READY{Readiness READY?}
-    READY -->|no| HOLD[OPEN + BLOCKED/NEEDS_REFINEMENT]
-    READY -->|yes| START[debt.py start]
-    START --> PROG[IN_PROGRESS]
-    PROG --> WORK[Normal Spec Kit implementation workflow]
-    WORK --> PROOF{Original resolution criteria objectively proven?}
+    READY -->|yes| PROG[IN_PROGRESS]
+    READY -->|no| HOLD[OPEN / blocked refinement]
+    PROG --> PROOF{Original resolution criteria proven?}
     PROOF -->|no| PROG
-    PROOF -->|yes| CLOSE[debt.py close --criteria-satisfied --evidence]
-    CLOSE --> RES[RESOLVED + preserved history]
+    PROOF -->|yes| RES[RESOLVED + evidence/history]
 ```
-
-## Debt file map
-
-| Concern | Package source | Installed/project location | Customization |
-|---|---|---|---|
-| debt skills | `assets/presets/powerpack-core/commands/speckit.debt-*.md` | materialized commands | project policy provides domain semantics |
-| deterministic ledger | `assets/runtime/powerpack_debt.py` | `.specify/powerpack/bin/debt.py` | generic storage/lifecycle behavior |
-| floor policy | `assets/policies/technical-debt.md` | `.specify/powerpack/technical-debt-policy.md` | project may only become stricter |
-| config | `assets/config/default-technical-debt.json` | `.specify/powerpack/technical-debt.json` | backlog path, prefix, project policies |
-| default backlog shape | `assets/templates/technical-debt-backlog.md` | `.specify/powerpack/technical-debt-template.md` | project may bind an established deterministic format/adapter |
-| actual default ledger | created by debt runtime | `docs/technical-debt.md` | version-controlled project backlog |
 
 # 8. Install, update and forced recovery
 
+Installation and update are scoped to PowerPack-managed assets. `--bootstrap-speckit` installs or upgrades an incompatible Spec Kit to the tested version before preset/extension materialization. Project configuration is preserved unless an explicitly confirmed reset is requested.
+
 ```mermaid
 flowchart TD
-    START[init / install / agent update] --> UC[Load update.json]
-    UC --> META[Read installed PEP 610 VCS metadata]
-    META --> REF[Resolve Git repository + ref]
-    REF --> REM[git ls-remote]
-    REM --> CMP{Compare installed commit}
-    CMP -->|same| CURRENT[CURRENT]
-    CMP -->|different| AVAILABLE[UPDATE_AVAILABLE]
-    CMP -->|cannot prove installed source| UNKNOWN[UNKNOWN_INSTALLED_SOURCE]
-    REM -->|error| CF[CHECK_FAILED]
-
-    AVAILABLE --> ASK{Explicit confirmation?}
-    ASK -->|no| KEEP[Keep current install]
-    ASK -->|yes| SELF[uv tool install --force git+repo@ref]
-    UNKNOWN -->|normal| STOP[Stop]
-    CF -->|normal| STOP
-    UNKNOWN -->|explicit --force --yes| SELF
-    CF -->|explicit --force --yes| SELF
-    CURRENT -->|explicit --force --yes| SELF
-
-    SELF --> REFRESH{Initialized project + refresh enabled?}
-    REFRESH -->|yes| NEWCLI[Invoke NEW CLI project-only force refresh]
-    REFRESH -->|no| DONE[CLI updated]
-    NEWCLI --> CFGRESET{Explicit --reset-config?}
-    CFGRESET -->|no| PRESERVE[Overwrite managed assets; preserve project config]
-    CFGRESET -->|yes + force + yes| RESET[Restore mutable PowerPack config defaults]
-    PRESERVE --> SAFE[Preserve source, debt history, Web auth and Git history]
-    RESET --> SAFE
+    START[init/install/update] --> VER{Spec Kit compatible?}
+    VER -->|no + bootstrap| SK[install tested Spec Kit]
+    VER -->|no without bootstrap| STOP[BLOCKED]
+    VER -->|yes| MAT[materialize PowerPack]
+    SK --> MAT
+    MAT --> BROWSER[prepare isolated Chromium]
+    BROWSER --> CONSENT[explicit review authorize still required]
 ```
 
-## Update file map
-
-| Concern | Package source | Installed/project location | Customization |
-|---|---|---|---|
-| update policy | `assets/config/default-update.json` | `.specify/powerpack/update.json` | channel/ref/check/refresh policy |
-| installed source/ref resolver | `src/speckit_powerpack/update_manager.py` | installed CLI package | package-level updater semantics |
-| install/update orchestration | `src/speckit_powerpack/cli.py` | `speckit-powerpack` executable | CLI flags/config |
-| agent-facing update skill | `assets/extensions/powerpack-tools/commands/update.md` | materialized extension command | project may add stricter approval policy |
-| managed project refresh | `cli.py::install_support/install_components` | `.specify/powerpack` + Spec Kit components | configs preserved by default |
-
-`--force` is brute-force only inside the PowerPack ownership boundary. `--reset-config` is a separate stronger action and requires explicit `--force --yes`. No updater path authorizes Git reset/rebase/force-push or deletion of project source/debt/browser profiles.
+Forced updater recovery never authorizes Git reset/rebase/force-push, deletion of project source/debt history, or deletion of PowerPack browser profiles.
 
 # 9. Session-limit resume
 
-```mermaid
-flowchart LR
-    LIMIT[Claude/Codex usage or rate limit] --> CLASS[powerpack.py limit classify]
-    CLASS --> CP[Persist safe limit checkpoint]
-    CP --> STOP[Stop/wait/resume later]
-    STOP --> STATUS[full_cycle/review status]
-    STATUS --> RESUME[Resume exact phase / review state]
-```
-
-Limit checkpoints contain safe execution context, never passwords, cookies, MFA or raw browser authentication.
+Usage/session/rate limits are checkpointed separately from code/test failures. Checkpoints contain safe resumable execution context, never passwords, cookies, MFA codes or raw browser authentication material.
 
 # 10. Change decision guide
 
@@ -351,12 +283,13 @@ flowchart TD
     K -->|config/default| CFG[PowerPack config asset]
     K -->|OS/language/framework/build support| CAP[Capability strategy]
     K -->|review methodology/evidence| REV[Review protocol/validator]
+    K -->|browser consent/session isolation| WEB[CLI + review_onboarding.py]
     K -->|debt lifecycle/storage| DEBT[Debt policy/runtime]
     K -->|installation/update/recovery| UPDATE[CLI/update_manager]
 ```
 
-Examples that stay project-local: WASAPI lifecycle, WSL-first policy, trading-specific invariants, Oracle APEX metadata rules, a specific backend-to-frontend route traceability implementation.
+Examples that stay project-local: trading-specific invariants, Oracle APEX metadata rules, a specific backend-to-frontend traceability implementation.
 
-Examples that belong in PowerPack: same-SPEC receipts, generic convergence/review lifecycle, evidence contracts, capability resolution, technical-debt governance mechanics, full-cycle orchestration, platform-scoped Web identity and safe updater/recovery behavior.
+Examples that belong in PowerPack: same-SPEC receipts, generic convergence/review lifecycle, evidence contracts, capability resolution, technical-debt governance mechanics, top-level orchestration, isolated Playwright consent/profile handling and safe updater/recovery behavior.
 
 See also [`CUSTOMIZATION.md`](CUSTOMIZATION.md), [`IMPLEMENT_REVIEW.md`](IMPLEMENT_REVIEW.md), [`FULL_CYCLE.md`](FULL_CYCLE.md), [`TECHNICAL_DEBT.md`](TECHNICAL_DEBT.md), [`UPDATES.md`](UPDATES.md) and [`PORTABILITY.md`](PORTABILITY.md).
