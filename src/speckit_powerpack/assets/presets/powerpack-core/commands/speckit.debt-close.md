@@ -4,7 +4,9 @@ description: "Resolve technical debt only with objective evidence against its or
 
 # SpecKit Technical Debt — Close
 
-Closing debt is an evidence gate. `RESOLVED` is allowed only when the original resolution criteria are demonstrated.
+Read `.specify/powerpack/technical-debt-policy.md`, `.specify/powerpack/technical-debt.json`, the configured backlog and every project policy in `project_policy_paths`.
+
+Closing debt is an evidence gate. `RESOLVED` is allowed only when the original resolution criteria are demonstrated under the effective policy.
 
 For each ID:
 
@@ -14,7 +16,8 @@ For each ID:
 4. verify a linked SPEC actually covers the intended debt without assuming a checkbox is proof;
 5. treat PR/commit/branch references as provenance, not correctness evidence;
 6. when executable validation is required, run the PowerPack capability-selected gate through `.specify/powerpack/bin/capabilities.py`, never a hard-coded language/framework command;
-7. confirm no relevant residual remains against the original criterion.
+7. confirm no relevant residual remains against the original criterion;
+8. enforce any stricter project-specific closure evidence from the configured project policies.
 
 If evidence is insufficient, a required gate failed, residual work remains or ownership conflicts, return `NOT_CLOSABLE` and do not write.
 
