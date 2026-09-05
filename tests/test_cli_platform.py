@@ -40,3 +40,26 @@ def test_legacy_global_profile_migrates_only_to_current_platform():
     assert migrated["active_profiles"] == {"linux": "legacy"}
     assert migrated["projects"]["default"]["bindings"]["linux"]["profile"] == "legacy"
     assert "windows" not in migrated["projects"]["default"]["bindings"]
+
+
+def test_spec_kit_bootstrap_uses_direct_git_package_not_from(monkeypatch):
+    calls = []
+    specify_checks = iter([None, "/usr/bin/specify"])
+
+    def fake_which(name):
+        if name == "specify":
+            return next(specify_checks)
+        if name == "uv":
+            return "/usr/bin/uv"
+        return None
+
+    monkeypatch.setattr(cli.shutil, "which", fake_which)
+    monkeypatch.setattr(cli, "run", lambda argv, **kwargs: calls.append(argv))
+    assert cli.ensure_specify(True) == "/usr/bin/specify"
+    assert calls == [[
+        "/usr/bin/uv",
+        "tool",
+        "install",
+        f"git+{cli.SPECKIT_REPO}@{cli.SPECKIT_TESTED_TAG}",
+    ]]
+    assert "--from" not in calls[0]
