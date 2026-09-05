@@ -102,6 +102,8 @@ def install_support(project: Path, integration: str) -> None:
         shutil.copy2(source, base / "deep-review-protocol.md")
     with asset("policies/technical-debt.md") as source:
         shutil.copy2(source, base / "technical-debt-policy.md")
+    with asset("templates/technical-debt-backlog.md") as source:
+        shutil.copy2(source, base / "technical-debt-template.md")
     with asset("config/default-model-routing.json") as source:
         routing = json.loads(source.read_text(encoding="utf-8"))
     routing["active_integration"] = integration
