@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Resumable same-SPEC full-cycle state machine for SpecKit PowerPack."""
+"""Resumable same-SPEC full-cycle state machine for SpecKit PowerPack.
+
+The top-level cycle intentionally keeps the initial implementation as an explicit
+phase. `speckit-implement-review` owns the later convergence/review/fix loops.
+"""
 from __future__ import annotations
 
 import argparse
@@ -10,7 +14,7 @@ from typing import Any
 
 PHASE_ORDER = [
     "clarify", "plan", "checklist", "checklist_converge", "tasks",
-    "analyze", "implement", "converge", "implement_review",
+    "analyze", "implement", "implement_review",
 ]
 
 
@@ -109,6 +113,8 @@ def cmd_start(args: argparse.Namespace) -> int:
         behavior.get("same_spec_only") is True
         and behavior.get("stop_on_blocked") is True
         and behavior.get("allow_debt_escape_hatch") is False
+        and behavior.get("explicit_initial_implement_required", True) is True
+        and behavior.get("implement_review_owns_convergence", True) is True
     )
     if not invariant_ok:
         print(json.dumps({"status": "BLOCKED_CONFIGURATION", "reason": "non-weakenable-full-cycle-invariant-changed"}))
@@ -121,17 +127,17 @@ def cmd_start(args: argparse.Namespace) -> int:
     if not phases:
         print(json.dumps({"status": "BLOCKED_CONFIGURATION", "reason": "no-enabled-phases"}))
         return 8
+    if "implement_review" in phases and "implement" not in phases:
+        print(json.dumps({"status": "BLOCKED_CONFIGURATION", "reason": "implement-review-requires-explicit-implement-phase"}))
+        return 8
     limits = cfg.get("limits", {}) if isinstance(cfg.get("limits"), dict) else {}
     state = {
-        "schema_version": 1,
+        "schema_version": 2,
         "status": "RUNNING",
         "feature": feature_id(root, feature),
         "mode": args.mode or str(cfg.get("mode") or "interactive"),
         "enabled_phases": phases,
         "current_phase": phases[0],
-        "return_after_implement": None,
-        "convergence_round": 0,
-        "review_round": 0,
         "max_convergence_rounds": int(limits.get("max_convergence_rounds", 5)),
         "max_review_rounds": int(limits.get("max_review_rounds", 5)),
         "history": [],
@@ -146,8 +152,8 @@ def cmd_status(args: argparse.Namespace) -> int:
     return 0
 
 
-def block(state: dict[str, Any], reason: str) -> None:
-    state["status"] = "BLOCKED"
+def block(state: dict[str, Any], reason: str, *, status: str = "BLOCKED") -> None:
+    state["status"] = status
     state["blocked_reason"] = reason
 
 
@@ -165,6 +171,12 @@ def cmd_advance(args: argparse.Namespace) -> int:
     if outcome == "blocked":
         block(state, args.evidence or "phase reported blocked")
         return persist_and_print(root, feature, state, 10)
+    if outcome == "budget-exhausted":
+        if current != "implement_review":
+            print(json.dumps({"status": "BLOCKED", "reason": "budget-exhausted-only-valid-for-implement-review"}))
+            return 9
+        block(state, args.evidence or "review budget exhausted", status="BLOCKED_BUDGET")
+        return persist_and_print(root, feature, state, 12)
 
     phases = list(state.get("enabled_phases") or [])
     if current == "checklist" and outcome == "skipped":
@@ -177,39 +189,20 @@ def cmd_advance(args: argparse.Namespace) -> int:
             state["current_phase"] = next_phase(phases, "checklist_converge")
         else:
             state["current_phase"] = candidate
-    elif current == "converge":
-        state["convergence_round"] = int(state.get("convergence_round", 0)) + 1
-        if state["convergence_round"] > int(state.get("max_convergence_rounds", 5)):
-            block(state, "max-convergence-rounds-exceeded")
-            return persist_and_print(root, feature, state, 11)
-        if outcome == "needs-implementation":
-            state["return_after_implement"] = "converge"
-            state["current_phase"] = "implement"
-        elif outcome in {"converged", "completed"}:
-            state["current_phase"] = next_phase(phases, current)
-        else:
-            print(json.dumps({"status": "BLOCKED", "reason": "invalid-converge-outcome", "outcome": outcome}))
-            return 9
     elif current == "implement_review":
-        state["review_round"] = int(state.get("review_round", 0)) + 1
-        if state["review_round"] > int(state.get("max_review_rounds", 5)):
-            block(state, "max-review-rounds-exceeded")
-            return persist_and_print(root, feature, state, 12)
         if outcome == "findings":
-            state["return_after_implement"] = "implement_review"
-            state["current_phase"] = "implement"
-        elif outcome in {"approved", "completed"}:
+            print(json.dumps({
+                "status": "BLOCKED",
+                "reason": "implement-review-must-own-findings-fix-and-convergence-loop",
+                "next_action": "continue-speckit-implement-review",
+            }))
+            return 9
+        if outcome in {"approved", "completed"}:
             state["current_phase"] = "DONE"
             state["status"] = "DONE"
         else:
             print(json.dumps({"status": "BLOCKED", "reason": "invalid-review-outcome", "outcome": outcome}))
             return 9
-    elif current == "implement" and state.get("return_after_implement"):
-        if outcome != "completed":
-            print(json.dumps({"status": "BLOCKED", "reason": "implement-must-complete-before-return", "outcome": outcome}))
-            return 9
-        state["current_phase"] = str(state.get("return_after_implement"))
-        state["return_after_implement"] = None
     else:
         if outcome not in {"completed", "skipped"}:
             print(json.dumps({"status": "BLOCKED", "reason": "invalid-phase-outcome", "phase": current, "outcome": outcome}))
@@ -222,7 +215,7 @@ def cmd_advance(args: argparse.Namespace) -> int:
 
 def cmd_resume(args: argparse.Namespace) -> int:
     root = find_root(); feature = resolve_feature(root, args.feature_dir); state = load_state(root, feature)
-    if state.get("status") == "BLOCKED" and args.unblock:
+    if state.get("status") in {"BLOCKED", "BLOCKED_BUDGET"} and args.unblock:
         state["status"] = "RUNNING"
         state.pop("blocked_reason", None)
         write_state(state_path(root, feature), state)
@@ -244,7 +237,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
     p = sub.add_parser("start"); p.add_argument("--feature-dir"); p.add_argument("--mode", choices=["interactive", "auto"]); p.add_argument("--restart", action="store_true"); p.set_defaults(func=cmd_start)
     p = sub.add_parser("status"); p.add_argument("--feature-dir"); p.set_defaults(func=cmd_status)
-    p = sub.add_parser("advance"); p.add_argument("--feature-dir"); p.add_argument("--phase", required=True, choices=PHASE_ORDER); p.add_argument("--outcome", required=True, choices=["completed", "skipped", "blocked", "needs-implementation", "converged", "findings", "approved"]); p.add_argument("--evidence"); p.set_defaults(func=cmd_advance)
+    p = sub.add_parser("advance"); p.add_argument("--feature-dir"); p.add_argument("--phase", required=True, choices=PHASE_ORDER); p.add_argument("--outcome", required=True, choices=["completed", "skipped", "blocked", "findings", "approved", "budget-exhausted"]); p.add_argument("--evidence"); p.set_defaults(func=cmd_advance)
     p = sub.add_parser("resume"); p.add_argument("--feature-dir"); p.add_argument("--unblock", action="store_true"); p.set_defaults(func=cmd_resume)
     p = sub.add_parser("abort"); p.add_argument("--feature-dir"); p.set_defaults(func=cmd_abort)
     return parser
