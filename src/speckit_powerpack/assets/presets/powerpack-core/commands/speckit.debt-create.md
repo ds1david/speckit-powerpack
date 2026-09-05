@@ -4,52 +4,58 @@ description: "Create a governed technical-debt item only when the work is legiti
 
 # SpecKit Technical Debt — Create
 
-Use this command to record deliberate technical debt. Do not use it to make an active SPEC, convergence pass or implementation review appear complete.
+Use this command to record deliberate non-blocking technical debt. It is never an escape hatch for active SPEC, convergence, review, correctness, security, compliance or data-integrity obligations.
 
-## Policy sources
+## Effective policy
 
-Read, in order:
+Read in order:
 
-1. `.specify/powerpack/technical-debt-policy.md` — immutable PowerPack safety floor for this installation;
-2. `.specify/powerpack/technical-debt.json` — storage format, backlog path, template path, prefix and project-policy references;
-3. every existing project policy listed in `project_policy_paths`.
+1. `.specify/powerpack/technical-debt-policy.md` — non-weakenable PowerPack safety floor;
+2. `.specify/powerpack/technical-debt.json` — storage, prefixes and policy references;
+3. every existing document listed in `project_policy_paths`.
 
-The effective policy is cumulative. Project policy may be stricter or add domain-specific ownership/fields, but MUST NOT weaken the PowerPack floor. If policies conflict, apply the stricter rule and report the conflict.
+Project rules may be stricter or add owners/domains/fields. They cannot weaken the PowerPack floor. On conflict apply the stricter rule and report it.
 
-## Mandatory creation gate
+## Semantic creation gate
 
-Before writing anything, prove all conditions below:
+Before invoking the runtime, prove:
 
-- the work is not required by the active SPEC, acceptance criteria, constitution or mandatory gate;
+- work is not required by active SPEC/acceptance criteria/constitution/mandatory gate;
 - it is not an unresolved `speckit-implement-review` finding;
 - it is not an actionable `speckit-converge` gap;
-- it is not a P0/BLOCKER or immediate correctness/security/compliance/data-integrity blocker;
-- the problem has concrete evidence and impact;
-- deferral has an explicit rationale;
-- an objective resolution criterion exists;
-- owner is known;
-- the backlog was searched for duplicates and related items.
+- it is not P0/BLOCKER or an immediate correctness/security/compliance/data-integrity blocker;
+- concrete evidence and impact exist;
+- deferral rationale is explicit;
+- objective resolution criteria exist;
+- ownership is known;
+- backlog was checked for duplicate/related capabilities.
 
-If any mandatory condition fails, return `NOT_DEBT` with the current flow that must own the work. Do not create a backlog item.
+If any mandatory condition fails return `NOT_DEBT`; keep the work in the flow that discovered it.
 
-## Grouping and deduplication
+## Runtime write
 
-Prefer one coherent capability over multiple near-duplicate debt entries. Never create one SPEC per debt by default. If the proposed item materially overlaps an existing item, recommend linking/expanding that item instead of minting a new ID.
+Invoke the deterministic project-local ledger only after the semantic gate passes:
 
-## Write contract
+```bash
+python .specify/powerpack/bin/debt.py create \
+  --title "<title>" \
+  --owner "<owner>" \
+  --description "<problem>" \
+  --origin "<provenance>" \
+  --origin-kind <manual|spec|incident|audit> \
+  --impact "<impact>" \
+  --priority <P1|P2|P3 or stricter project value> \
+  --resolution-criteria "<objective proof>" \
+  --deferral-rationale "<why defer now>" \
+  --evidence "<existing evidence>"
+```
 
-Resolve `storage_format`, `backlog_path`, `template_path` and `id_prefix` from `.specify/powerpack/technical-debt.json`.
+Pass `--active-obligation` or `--blocker` whenever applicable; the runtime will mechanically reject the creation. Do not disguise review/converge work as another origin kind. The runtime also rejects `origin-kind=review|converge` under the default floor.
 
-If the configured backlog does not exist and `storage_format` is `markdown-v1`, create it by copying the configured `template_path` verbatim, then append the new item. Do not invent a second markdown shape when the canonical template is available.
+The runtime owns canonical template creation, stable sequential ID allocation and exact-title deduplication for `markdown-v1`. If a project configures another storage format without an adapter it returns `BLOCKED_CONFIGURATION` rather than guessing.
 
-If a project uses another storage format, follow the stricter project policy/adapter contract; if no deterministic write contract exists, return `BLOCKED_CONFIGURATION` rather than guessing.
-
-Allocate the next stable sequential ID for the configured prefix. Never reuse or renumber IDs.
-
-Record at least ID/title, owner, description, origin/provenance, impact, priority, status `OPEN`, readiness, objective resolution criteria, deferral rationale, dependencies/blockers, probable future SPEC/capability when known, creation date/evidence and lifecycle history.
-
-Do not modify code, SPECs, PRs or unrelated debt items.
+Prefer grouping related debt into one coherent future capability. Never create one SPEC per item by default.
 
 ## Result
 
-Return `CREATED`, `DUPLICATE`, `GROUP_WITH_EXISTING`, `NOT_DEBT`, `BLOCKED`, `BLOCKED_CONFIGURATION` or `NEEDS_REFINEMENT`, with evidence for the decision.
+Return the runtime result (`CREATED`, `DUPLICATE`, `NOT_DEBT`, `BLOCKED_CONFIGURATION`, etc.) plus the semantic evidence used to decide that this work is legitimately deferrable.
