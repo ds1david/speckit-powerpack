@@ -1,0 +1,42 @@
+schema_version: "1.0"
+
+preset:
+  id: "powerpack-core"
+  name: "SpecKit PowerPack Core"
+  version: "0.1.0"
+  description: "Composable prerequisite gates, model routing, checklist convergence and implementation-review convergence for official Spec Kit."
+  author: "David Oliveira"
+  repository: "https://github.com/ds1david/speckit-powerpack"
+  license: "MIT"
+
+requires:
+  speckit_version: ">=1.0.0"
+  extensions:
+    - id: "powerpack-tools"
+      version: ">=0.1.0"
+      required: true
+
+provides:
+  templates:
+    - type: "command"
+      name: "speckit.implement"
+      file: "commands/speckit.implement.md"
+      description: "Wrap official implement and record a precise same-SPEC implementation delta."
+      strategy: "wrap"
+    - type: "command"
+      name: "speckit.converge"
+      file: "commands/speckit.converge.md"
+      description: "Wrap official converge and record convergence state."
+      strategy: "wrap"
+    - type: "command"
+      name: "speckit.checklist-converge"
+      file: "commands/speckit.checklist-converge.md"
+      description: "Converge requirements-writing checklists after speckit.checklist."
+      strategy: "replace"
+    - type: "command"
+      name: "speckit.implement-review"
+      file: "commands/speckit.implement-review.md"
+      description: "Executor-aware independent implementation review with findings-to-tasks convergence."
+      strategy: "replace"
+
+tags: ["sdd", "workflow", "quality", "review"]
