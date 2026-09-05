@@ -71,5 +71,7 @@ def test_check_update_compares_installed_and_remote_commit(monkeypatch):
 def test_update_argv_is_explicit_forced_uv_reinstall(monkeypatch):
     monkeypatch.setattr(updates.shutil, "which", lambda name: "/usr/bin/uv" if name == "uv" else None)
     argv = updates.update_argv(updates.DEFAULT_REPOSITORY, "main")
-    assert argv[:5] == ["/usr/bin/uv", "tool", "install", "--force", "speckit-powerpack"]
-    assert argv[-1].endswith("@main")
+    assert argv[:4] == ["/usr/bin/uv", "tool", "install", "--force"]
+    assert argv[4].startswith("git+https://github.com/ds1david/speckit-powerpack.git@")
+    assert argv[4].endswith("@main")
+    assert "--from" not in argv
