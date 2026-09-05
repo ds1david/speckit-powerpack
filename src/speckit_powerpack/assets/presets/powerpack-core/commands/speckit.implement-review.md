@@ -105,7 +105,11 @@ python .specify/powerpack/bin/review_protocol.py validate \
   --previous <previous-review.json>
 ```
 
-A structurally invalid review is `BLOCKED_REVIEW_CONTRACT`; do not silently repair, soften or reinterpret the reviewer output.
+The validator classification is authoritative:
+
+- `VALID` -> proceed;
+- `BLOCKED_REVIEW_CONTRACT` -> stop; do not silently repair, soften or reinterpret the reviewer output;
+- `BLOCKED_REPEATED_FINDING` -> stop with the previous/current evidence because a finding declared resolved materially reappeared.
 
 `APPROVED` is accepted only when the validator proves:
 
@@ -145,8 +149,6 @@ python .specify/powerpack/bin/powerpack.py review ingest \
 Every finding becomes durable work in the current SPEC's `tasks.md` under `## PowerPack Review Findings`. Stable `REV-*` identities deduplicate repeated material findings without losing audit history.
 
 A finding is mandatory work regardless of severity. Never reject, reclassify, silence, defer or convert a review finding into technical debt/backlog/TODO/future issue merely to converge.
-
-If a materially identical finding reappears after the loop claimed it resolved, surface `BLOCKED_REPEATED_FINDING` with the prior and current evidence instead of cycling indefinitely.
 
 Show a compact table containing ID, severity, provider, status and title.
 
