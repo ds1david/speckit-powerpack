@@ -11,7 +11,8 @@
     "debt-list": "economical",
     "debt-consult": "economical",
     "debt-start": "reasoning",
-    "debt-close": "reasoning"
+    "debt-close": "reasoning",
+    "powerpack-update": "economical"
   },
   "reviewer_contract": {
     "codex": {
