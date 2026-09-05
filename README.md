@@ -1,62 +1,78 @@
 # SpecKit PowerPack
 
-> **Status: Draft / pre-release.** The repository is intentionally being evolved in public-ready form before its first stable release.
+> **Status: Draft / pre-release.** The repository is intentionally evolving before its first stable public release.
 
-SpecKit PowerPack is a composable enhancement layer for the official [GitHub Spec Kit](https://github.com/github/spec-kit). It does **not** fork or replace Spec Kit. It bootstraps the official `specify` CLI, installs PowerPack components through Spec Kit's native **Preset** and **Extension** mechanisms, and adds stricter workflow policies for prerequisite enforcement, requirements convergence and independent implementation review.
+SpecKit PowerPack is a composable enhancement layer for the official [GitHub Spec Kit](https://github.com/github/spec-kit). It does **not** fork or replace Spec Kit. It bootstraps/uses the official `specify` CLI, installs PowerPack components through Spec Kit-native presets/extensions, and adds stricter workflow state, convergence, deep implementation review, full-cycle orchestration and technical-debt governance.
 
 ## What this draft adds
 
-- `speckit-checklist-converge` — requirements-writing convergence after `speckit-checklist`.
-- `speckit-implement-review` — independent implementation-review convergence after at least one `speckit-implement` run for the **same SPEC**.
-- Same-SPEC predecessor receipts instead of trusting artifact existence.
-- Precise `speckit-implement` delta capture, including already-dirty worktrees.
-- Architecture-aware quality gates instead of a universal Maven command.
-- Documentation-only rounds return `NOT_APPLICABLE` and skip executable gates.
-- Claude Code / Codex executor-aware reviewer routing.
-- Codex deep-review profile: `gpt-5.6-sol`, `xhigh`, `read-only`.
-- Review findings persisted into `tasks.md` with batch convergence.
-- Interactive and automatic review modes.
-- Optional ChatGPT Project assisted second gate and browser-profile management.
-- Usage/session-limit checkpoints and resumable execution.
-- Review abort that removes ephemeral state without losing findings or authentication/project bindings.
+- `speckit-checklist-converge` — requirements/checklist convergence after the checklist step actually ran for the same SPEC.
+- `speckit-implement` wrapper — precise before/after implementation delta and same-SPEC receipts.
+- `speckit-converge` wrapper — convergence state integrated with the PowerPack lifecycle.
+- `speckit-implement-review` — independent deep technical review after implementation.
+- **Deep Review Evidence Protocol** — immutable snapshot identity, requirement coverage, baseline comparison, previous-finding validation, full-snapshot re-review and adversarial verdict challenge.
+- Review JSON validator with `BLOCKED_REVIEW_CONTRACT` and `BLOCKED_REPEATED_FINDING` classifications.
+- Review findings persisted into the current SPEC's `tasks.md` with `PENDING → SELECTED → IMPLEMENTED → RESOLVED` lifecycle.
+- `speckit-full-cycle` — same-SPEC orchestration from specification phases through implement/converge/review loops.
+- Technical-debt lifecycle: `speckit-debt-create`, `list`, `consult`, `start`, `close`.
+- Technical-debt safety floor that forbids using debt as an escape hatch for active SPEC work, convergence gaps, review findings or blockers.
+- Architecture/OS/language/framework-agnostic quality-gate capability resolution.
+- Claude Code / Codex executor-aware reviewer routing with no recursive Codex spawning.
+- Optional ChatGPT Project Web second gate with **platform-scoped browser profiles and project bindings**.
+- Usage/session-limit checkpoints, resumable execution and safe review abort.
+- CI across Ubuntu, Windows and macOS.
+
+## Core design rule
+
+PowerPack workflow logic must not scatter assumptions about operating system, language, framework, IDE or build tool.
+
+```text
+DISCOVER CAPABILITY
+        ↓
+SELECT STRATEGY
+        ↓
+EXECUTE CONTRACT
+```
+
+Project-specific rules should complement PowerPack through project configuration, policies, gates and local skills rather than cloning PowerPack skills.
 
 ## Architecture
 
 ```mermaid
 flowchart TB
-    U[Developer] --> PP[speckit-powerpack bootstrap]
+    U[Developer / agent] --> PP[speckit-powerpack bootstrap]
     PP --> SK[Official GitHub Spec Kit]
-    SK --> INIT[specify init]
-    PP --> EXT[powerpack-tools Extension]
     PP --> PRE[powerpack-core Preset]
+    PP --> EXT[powerpack-tools Extension]
 
     PRE --> CKC[speckit-checklist-converge]
     PRE --> IMP[speckit-implement wrapper]
     PRE --> CONV[speckit-converge wrapper]
     PRE --> REV[speckit-implement-review]
+    PRE --> FULL[speckit-full-cycle]
+    PRE --> DEBT[technical-debt lifecycle]
 
-    EXT --> RT[Project-local PowerPack runtime]
+    EXT --> RT[Project-local Python runtime]
     RT --> STATE[Same-SPEC receipts]
-    RT --> GATE[Architecture-aware gates]
-    RT --> ROUTE[Executor-aware reviewer routing]
-    RT --> TASKS[Review findings ledger]
+    RT --> CAP[Capability resolver]
+    RT --> ROUTE[Executor-aware routing]
+    RT --> LEDGER[Review findings ledger]
+    RT --> VALID[Deep-review evidence validator]
     RT --> LIMITS[Usage-limit checkpoints]
 ```
 
-PowerPack deliberately avoids directly editing generated `.claude/skills/*` or `.agents/skills/*` files as its source of truth. Spec Kit materializes agent-facing commands from the installed preset/extension.
+PowerPack deliberately avoids treating generated `.claude/skills/*` or `.agents/skills/*` files as its durable source of truth. Spec Kit materializes agent-facing commands from installed presets/extensions.
 
 ## Why no Spec Kit fork?
 
-A fork would require continuously merging upstream command changes. PowerPack instead composes the official commands:
+A fork would require continuously merging upstream changes. PowerPack instead composes/wraps official commands where needed and adds reusable policy/runtime layers around them.
 
 ```mermaid
 flowchart LR
-    CORE[Official Spec Kit core] --> WRAP[PowerPack preset wrapper]
-    WRAP --> POLICY[PowerPack policy]
+    CORE[Official Spec Kit] --> WRAP[PowerPack preset wrapper]
+    WRAP --> POLICY[PowerPack state / policy]
     POLICY --> OUT[Materialized agent command]
 ```
-
-Where a core command is wrapped, `{CORE_TEMPLATE}` keeps the upstream command body authoritative.
 
 ## Requirements
 
@@ -68,26 +84,26 @@ Current draft:
 - Claude Code and/or Codex CLI
 - Playwright only for the optional ChatGPT Project Web gate
 
-Independent-review routing is explicit:
+Independent-review routing:
 
 | Executor | Reviewer | Recursive Codex spawn |
 |---|---|---|
-| Claude Code | one external `codex exec` | forbidden |
+| Claude Code | exactly one external `codex exec` | forbidden |
 | Codex | current Codex session | forbidden |
 | unknown/other | `BLOCKED` | not attempted |
 
-The deep reviewer contract is currently `gpt-5.6-sol / xhigh / read-only`.
+Current deep Codex reviewer profile: `gpt-5.6-sol / xhigh / read-only`.
 
-## Install in a new project
+## Installation
 
-During the draft phase, install from GitHub:
+During the draft phase:
 
 ```bash
 uv tool install speckit-powerpack \
   --from git+https://github.com/ds1david/speckit-powerpack.git
 ```
 
-Initialize a new project with Claude Code:
+New project with Claude Code:
 
 ```bash
 mkdir my-project
@@ -101,30 +117,7 @@ Or Codex:
 speckit-powerpack init . --integration codex
 ```
 
-Bootstrap flow:
-
-```mermaid
-sequenceDiagram
-    participant User
-    participant PP as speckit-powerpack
-    participant UV as uv
-    participant SK as specify
-    participant Repo as Project
-
-    User->>PP: init --integration claude/codex
-    PP->>PP: detect specify
-    alt specify missing
-        PP->>UV: install official specify-cli
-    end
-    PP->>SK: specify init
-    SK->>Repo: initialize official Spec Kit
-    PP->>SK: extension add powerpack-tools --dev
-    PP->>SK: preset add powerpack-core --dev
-    PP->>Repo: install runtime/config
-    PP-->>User: ready
-```
-
-For an existing Spec Kit project:
+Existing Spec Kit project:
 
 ```bash
 speckit-powerpack install . --integration claude
@@ -136,114 +129,140 @@ If `specify` is missing and PowerPack should install it:
 speckit-powerpack install . --integration claude --bootstrap-speckit
 ```
 
-Diagnose:
+Diagnose installation:
 
 ```bash
 speckit-powerpack doctor
 ```
 
+## Installed project configuration
+
+```text
+.specify/
+└── powerpack/
+    ├── bin/
+    │   ├── powerpack.py
+    │   ├── capabilities.py
+    │   └── review_protocol.py
+    ├── model-routing.json
+    ├── prerequisites.json
+    ├── quality-gates.json
+    ├── review.json
+    ├── full-cycle.json
+    ├── technical-debt.json
+    ├── deep-review-protocol.md
+    ├── technical-debt-policy.md
+    ├── state/
+    │   └── <spec>.json
+    └── runtime/                 # gitignored ephemeral state
+        ├── reviews/
+        └── limit-checkpoint.json
+```
+
+See [`docs/CUSTOMIZATION.md`](docs/CUSTOMIZATION.md) for each skill/configuration surface and [`docs/PROCESS_ARCHITECTURE.md`](docs/PROCESS_ARCHITECTURE.md) for a detailed process diagram mapping every phase to its source/runtime file.
+
 ## Same-SPEC predecessor enforcement
 
-PowerPack does not accept "a file exists" as proof a workflow predecessor ran.
+PowerPack does not accept "a file exists" as proof that a workflow predecessor ran.
 
 ```mermaid
 flowchart LR
     CKA[speckit-checklist / SPEC-A] --> RA[receipt SPEC-A]
     RA --> CKCA[speckit-checklist-converge / SPEC-A]
-    RA -. not valid .-> CKCB[speckit-checklist-converge / SPEC-B]
+    RA -. invalid .-> CKCB[checklist-converge / SPEC-B]
 
     IA[speckit-implement / SPEC-A] --> RI[implement receipt SPEC-A]
     RI --> IRA[speckit-implement-review / SPEC-A]
-    RI -. not valid .-> IRB[speckit-implement-review / SPEC-B]
+    RI -. invalid .-> IRB[implement-review / SPEC-B]
 ```
 
-`checklist-converge` requires a completed checklist receipt for the same SPEC. `implement-review` requires at least one completed implement receipt for the same SPEC.
+## Precise implementation delta
 
-## Precise `speckit-implement` delta
+The implement wrapper captures workspace content before and after the official implementation step. A file that was already dirty before the round is not attributed to that round unless its content changes again during implementation.
 
-The implement wrapper snapshots content before execution and compares it after successful completion. A file already dirty before the round is not attributed to `speckit-implement` unless its content changes again during that round.
+The delta is also used to determine whether executable validation is applicable.
 
-This precise delta is also the basis for deciding whether an executable quality gate is necessary.
+## Capability-driven quality gates
 
-## Architecture-aware quality gates
-
-There is no universal `./mvnw -B verify` rule.
+No universal Maven command is embedded in the review skill.
 
 ```mermaid
 flowchart TD
     D[Latest implement delta] --> DOC{Documentation only?}
     DOC -->|yes| NA[NOT_APPLICABLE]
-    DOC -->|no| DETECT{Architecture}
-    DETECT -->|pom.xml| MVN[Maven: mvnw/mvn -B verify]
-    DETECT -->|build.gradle| GR[Gradle: gradlew/gradle check]
-    DETECT -->|package.json| JS[npm/pnpm/yarn/bun verify/check/test]
-    DETECT -->|pyproject/pytest| PY[pytest]
-    DETECT -->|.sln/.csproj| DOT[dotnet test]
-    DETECT -->|go.mod| GO[go test ./...]
-    DETECT -->|Cargo.toml| RS[cargo test]
-    DETECT -->|Eclipse only| BLOCK[BLOCKED_CONFIGURATION]
-    DETECT -->|unknown| BLOCK2[BLOCKED_CONFIGURATION]
+    DOC -->|no| DETECT[Capability discovery]
+    DETECT --> MVN[Maven strategy]
+    DETECT --> GR[Gradle strategy]
+    DETECT --> JS[Node package strategy]
+    DETECT --> PY[Python strategy when explicitly reproducible]
+    DETECT --> DOT[dotnet strategy]
+    DETECT --> GO[Go strategy]
+    DETECT --> RS[Rust strategy]
+    DETECT --> CUSTOM[Configured custom argv]
+    DETECT --> BLOCK[BLOCKED_CONFIGURATION if unknown/ambiguous]
 ```
 
-Override discovery in `.specify/powerpack/quality-gates.json`:
+Project override:
 
 ```json
 {
   "schema_version": 1,
-  "policy": "auto-detect",
-  "custom_command": ["make", "verify"]
+  "policy": "capability-strategy",
+  "custom_command": ["make", "verify"],
+  "unknown_architecture": "block",
+  "ambiguous_architecture": "block"
 }
 ```
 
-A Java/Eclipse project without a reproducible CLI build remains explicitly blocked until a custom gate is configured.
+in `.specify/powerpack/quality-gates.json`.
 
 ## `speckit-implement-review`
 
-Responsibilities are intentionally separated:
+There is one canonical skill/command asset: `speckit.implement-review.md`.
 
-- `speckit-checklist-converge` → requirements/document quality;
-- `speckit-converge` → implementation completeness vs. spec/plan/tasks;
-- `speckit-implement-review` → independent technical quality.
+A temporary `speckit.implement-review-v2.md` existed during the portability/refactoring work. It was a migration artifact, not a second intended skill, and has been removed. The preset now points only to the canonical file.
 
-Conceptual loop:
+Responsibilities remain separated:
 
-```mermaid
-flowchart LR
-    IMP[speckit-implement] --> CONV[speckit-converge]
-    CONV --> REV[speckit-implement-review]
-    REV -->|findings| BATCH[implement selected review batch]
-    BATCH --> TEST[quality gate]
-    TEST --> REV
-    REV -->|no findings| READY[Converged]
-```
+- `speckit-checklist-converge` → requirements/checklist quality;
+- `speckit-converge` → implementation completeness against SPEC/plan/tasks;
+- `speckit-implement-review` → independent technical quality and regression evidence.
 
-### Executor-aware reviewer routing
-
-PowerPack prevents a class of deterministic `BLOCKED` failures caused by contradictory instructions such as "do not invoke another agent" combined with "MUST spawn a reviewer subagent".
-
-The requirement is the **effective reviewer profile**, not an unconditional child-agent mechanism:
+### Deep-review round
 
 ```mermaid
 flowchart TD
-    START[speckit-implement-review] --> EXEC{Executor}
-    EXEC -->|Claude Code| C[Claude = implementer/orchestrator]
-    C --> CE[one codex exec]
-    CE --> CP[gpt-5.6-sol / xhigh / read-only]
-    CP --> R[review directly]
-
-    EXEC -->|Codex| LOCAL[current Codex session]
-    LOCAL --> PROFILE[apply reviewer protocol]
-    PROFILE --> R2[review directly]
-    R2 --> NO[do not call codex exec or spawn Codex subagent]
-
-    EXEC -->|unknown| B[BLOCKED]
+    SNAP[Immutable SPEC/base/merge-base/head/digest] --> PREV{Previous round?}
+    PREV -->|yes| P1[Validate every previous finding]
+    PREV -->|no| P2[Full snapshot review]
+    P1 --> P2
+    P2 --> P3[Adversarial verdict challenge]
+    P3 --> JSON[Schema 2.0 evidence JSON]
+    JSON --> VAL[review_protocol.py validate]
+    VAL -->|bad contract| BC[BLOCKED_REVIEW_CONTRACT]
+    VAL -->|resolved defect materially reappears| BR[BLOCKED_REPEATED_FINDING]
+    VAL -->|findings| TASKS[Persist findings in tasks.md]
+    VAL -->|approved| NEXT[Optional Web gate / convergence]
 ```
 
-This specifically supports `codex exec` headless review without asking that headless session to recursively create another Codex session.
+Mandatory review fronts:
 
-## Findings are durable work in `tasks.md`
+- SPEC compliance;
+- behavioral regression against baseline;
+- architecture/contracts;
+- state/concurrency/failures;
+- persistence/determinism/idempotency;
+- tests/composition root;
+- documentation/operability;
+- security/scope.
 
-Every finding is persisted before implementation.
+`APPROVED` requires the evidence validator to accept the review. Green tests or an empty-looking diff are not sufficient evidence by themselves.
+
+See [`docs/IMPLEMENT_REVIEW.md`](docs/IMPLEMENT_REVIEW.md).
+
+## Findings are durable work
+
+Every valid finding is persisted before implementation.
 
 ```mermaid
 stateDiagram-v2
@@ -254,67 +273,64 @@ stateDiagram-v2
     RESOLVED --> [*]
 ```
 
-PowerPack appends a `## PowerPack Review Findings` section using stable IDs such as `REV-a12bc34def`.
+Findings cannot be moved to backlog, TODO or technical debt merely to make implementation-review converge.
 
-Example:
+## `speckit-full-cycle`
 
-```markdown
-- [ ] REV-a12bc34def [REVIEW][PENDING][codex][HIGH] Race in state transition | evidence: src/Foo.java:82 | source-round: 2
-```
-
-Resolved:
-
-```markdown
-- [x] REV-a12bc34def [REVIEW][RESOLVED][codex][HIGH] Race in state transition | evidence: src/Foo.java:82 | source-round: 2 | resolution: synchronized transition and regression test
-```
-
-Repeated findings with the same provider/title/location fingerprint are deduplicated instead of being lost or duplicated silently.
-
-## Interactive mode
-
-```text
-CODE REVIEW
-    ↓
-all findings → tasks.md as PENDING
-    ↓
-display simplified table
-    ↓
-user selects implementation batch
-    ↓
-SELECTED → implementation → IMPLEMENTED
-    ↓
-quality gate
-    ↓
-RESOLVED + evidence
-    ↓
-remaining findings?
-    ├─ yes → next batch or stop
-    └─ no  → fresh review round
-```
-
-## Automatic mode
+`full-cycle` orchestrates existing primitives for exactly one SPEC rather than reimplementing them.
 
 ```mermaid
 flowchart TD
-    R[Review] --> F[Persist all findings]
-    F --> S[Select all pending]
-    S --> I[Implement all]
-    I --> G[Quality gate]
-    G --> X[Resolve with evidence]
-    X --> R2[Fresh review on new HEAD]
-    R2 -->|findings| F
-    R2 -->|none| DONE[Converged]
+    S[Resolve/create one SPEC] --> C[clarify]
+    C --> P[plan]
+    P --> K[checklist when applicable]
+    K --> KC[checklist-converge]
+    KC --> T[tasks]
+    T --> A[analyze]
+    A --> I[implement]
+    I --> V[converge]
+    V -->|remaining tasks| I
+    V -->|converged| R[implement-review]
+    R -->|findings| I2[implement review tasks + gate]
+    I2 --> R
+    R -->|approved| DONE[DONE]
 ```
 
-Findings are not converted to backlog, TODO or technical debt just to make the review converge.
+Configure the orchestration in `.specify/powerpack/full-cycle.json`, including interactive/auto mode and round limits. Safety fields such as same-SPEC-only, stop-on-blocked and no debt escape hatch cannot be weakened.
+
+See [`docs/FULL_CYCLE.md`](docs/FULL_CYCLE.md).
+
+## Technical-debt governance
+
+PowerPack adds:
+
+```text
+speckit-debt-create
+speckit-debt-list
+speckit-debt-consult
+speckit-debt-start
+speckit-debt-close
+```
+
+The safety floor is installed at `.specify/powerpack/technical-debt-policy.md`. Project-specific governance is referenced through `.specify/powerpack/technical-debt.json -> project_policy_paths`.
+
+```mermaid
+flowchart LR
+    IDEA[Potential deferred work] --> GATE[Debt creation gate]
+    GATE -->|active SPEC/review/converge/blocker| CURRENT[Return to current flow]
+    GATE -->|legitimately deferrable| OPEN[OPEN]
+    OPEN --> START[IN_PROGRESS]
+    START --> CLOSE[Evidence-based close]
+    CLOSE --> RES[RESOLVED]
+```
+
+The PowerPack floor is a minimum: project policy may be stricter but may not make active review findings, convergence gaps or blockers deferrable.
+
+See [`docs/TECHNICAL_DEBT.md`](docs/TECHNICAL_DEBT.md).
 
 ## Optional ChatGPT Project gate
 
-Codex is the primary independent reviewer. The Web gate is optional:
-
-- no ChatGPT Project bound → Codex-only;
-- project bound → Codex then assisted ChatGPT Project review on the same HEAD;
-- Web finding changes the implementation → Codex must review the new HEAD again.
+Codex is the first independent reviewer. When configured, ChatGPT Project Web review is a second independent gate on the **same HEAD** using the same deep-review evidence contract.
 
 Install browser support only when needed:
 
@@ -322,103 +338,104 @@ Install browser support only when needed:
 speckit-powerpack review setup --install-browser
 ```
 
-Login with an isolated persistent profile:
+Login to a machine/platform-local persistent profile:
 
 ```bash
-speckit-powerpack review auth login personal
+speckit-powerpack review auth login work
 ```
 
-Bind a project:
+Bind a project on the current platform:
 
 ```bash
 speckit-powerpack review project bind \
   atsel \
   'https://chatgpt.com/g/g-p-.../project' \
-  --profile personal
+  --profile work
 ```
 
-Use it in the current repo:
+Use it in the current repository:
 
 ```bash
 speckit-powerpack review project use atsel
 ```
 
-Logout or remove local authentication state:
+Inspect bindings:
 
 ```bash
-speckit-powerpack review auth logout personal
-speckit-powerpack review auth forget personal
+speckit-powerpack review project list --all-platforms
 ```
 
-Credentials and MFA are entered only in the real browser. PowerPack does not request passwords through the CLI.
+Logout/forget current-platform profile state:
+
+```bash
+speckit-powerpack review auth logout work
+speckit-powerpack review auth forget work
+```
+
+Credentials and MFA are entered only in the browser.
+
+### Platform-scoped browser identity
+
+Profiles are isolated by platform even when their human-readable name is identical:
+
+```text
+<PowerPack global config root>/
+├── config.json
+└── browser-profiles/
+    ├── windows/
+    │   └── work/
+    ├── linux/
+    │   └── work/
+    └── macos/
+        └── work/
+```
+
+WSL uses the Linux namespace and therefore does not reuse Windows browser storage/authentication. Project aliases also have separate bindings per platform, allowing different ChatGPT accounts/projects when necessary.
 
 ## Session/usage limits
 
-Long Claude/Codex loops may hit usage limits. PowerPack distinguishes those from code/test failures:
+Long Claude/Codex loops may hit usage limits. PowerPack distinguishes those from code/test failures and persists a resumable checkpoint when the operator chooses to wait or resume later.
 
 ```mermaid
 flowchart TD
-    ERR[Agent stops] --> CLASS[classify output]
-    CLASS -->|normal failure| FAIL[normal error handling]
-    CLASS -->|usage/rate/session limit| ASK{Operator choice}
+    ERR[Agent stops] --> CLASS[classify]
+    CLASS -->|normal error| FAIL[normal handling]
+    CLASS -->|usage/rate/session limit| ASK{choice}
     ASK -->|wait-for-refresh| CP[persist checkpoint]
     ASK -->|resume-later| CP
-    ASK -->|abort| AB[abort review]
-    CP --> RESUME[resume using summary + safe argv]
+    ASK -->|abort| AB[abort review run]
+    CP --> RESUME[resume safely]
 ```
 
-A checkpoint can contain SPEC, review round, selected finding IDs, last gate, next action and a known refresh timestamp. It must never contain passwords, browser cookies, MFA values or raw authentication material.
+Checkpoints never contain passwords, cookies, MFA values or raw authentication material.
 
 ## Abort semantics
 
-```bash
-python .specify/powerpack/bin/powerpack.py review abort
-```
+`review abort` removes ephemeral review-run state while preserving:
 
-Abort removes ephemeral local review-run state while preserving:
-
-- findings already written to `tasks.md`;
+- durable findings already written to `tasks.md`;
 - implementation changes;
-- browser authentication profiles;
+- platform-scoped browser authentication profiles;
 - ChatGPT Project bindings.
 
-This allows abandoning a broken review run without destroying its audit trail.
+## Customization and process documentation
 
-## Runtime layout
-
-```text
-.specify/
-└── powerpack/
-    ├── bin/powerpack.py
-    ├── model-routing.json
-    ├── prerequisites.json
-    ├── quality-gates.json
-    ├── review.json
-    ├── state/
-    │   └── <spec>.json
-    └── runtime/                 # gitignored ephemeral state
-        ├── reviews/
-        └── limit-checkpoint.json
-```
-
-Browser profiles live outside the repository:
-
-```text
-~/.config/speckit-powerpack/
-├── config.json
-└── browser-profiles/
-    ├── personal/
-    └── work/
-```
+- [`docs/CUSTOMIZATION.md`](docs/CUSTOMIZATION.md) — exactly how each PowerPack skill can be customized and which invariants cannot be weakened.
+- [`docs/PROCESS_ARCHITECTURE.md`](docs/PROCESS_ARCHITECTURE.md) — detailed end-to-end diagrams, installed/project/package layers, and a table mapping every process node to its file/configuration.
+- [`docs/PORTABILITY.md`](docs/PORTABILITY.md) — platform/capability design.
+- [`docs/IMPLEMENT_REVIEW.md`](docs/IMPLEMENT_REVIEW.md) — deep implementation-review contract.
+- [`docs/TECHNICAL_DEBT.md`](docs/TECHNICAL_DEBT.md) — debt governance.
+- [`docs/FULL_CYCLE.md`](docs/FULL_CYCLE.md) — full-cycle orchestration.
 
 ## Security boundaries
 
-- Codex review is read-only.
+- Codex review uses read-only sandbox semantics.
 - Passwords/MFA are never collected by the PowerPack CLI.
-- Browser profiles are outside the source repository.
+- Browser profiles live outside source repositories and are separated by platform.
 - Ephemeral review state is gitignored.
-- Review commands do not authorize merge, GitHub approval, ready-for-review, force-push or destructive reset.
+- Review workflows do not authorize merge, GitHub approval, ready-for-review, force-push or destructive reset.
 - Review abort never deletes durable findings.
+- Technical debt cannot hide current-flow blockers or findings.
 
 ## Development
 
@@ -427,11 +444,11 @@ python -m pip install -e '.[dev]'
 pytest -q
 ```
 
-Tests cover same-SPEC predecessor isolation, checklist receipt enforcement, dirty-worktree delta tracking, documentation-only gates, Maven/Gradle/Eclipse behavior, Claude→Codex routing, Codex local-session routing without recursion, `xhigh` review effort, finding deduplication/state transitions, abort persistence and usage-limit classification.
+CI executes tests and wheel builds on Ubuntu, Windows and macOS with Python 3.11 and 3.13.
 
 ## Draft roadmap
 
-Before a stable public release, PowerPack is expected to add more skills/workflows, catalog/release assets for fully catalog-driven Spec Kit Bundle installation, broader integration adapters and CI smoke tests across the primary agents. The current CLI remains a bootstrap/UX layer; the long-term source of truth is still Spec Kit-native presets, extensions and workflows.
+Before a stable release, PowerPack is expected to add catalog/release assets for fully catalog-driven Spec Kit Bundle installation, broader integration adapters, additional generic workflows and further hardening based on reusable patterns discovered in real projects.
 
 ## License
 
