@@ -27,6 +27,15 @@ def test_consent_page_discloses_isolated_profile_and_exact_project(tmp_path: Pat
     assert "Conceder acesso ao projeto" in html
 
 
+def test_exact_project_match_allows_query_but_rejects_login_or_other_project():
+    requested = "https://chatgpt.com/g/g-p-demo/project"
+    assert onboarding.same_chatgpt_project(requested, requested) is True
+    assert onboarding.same_chatgpt_project(requested + "?foo=bar", requested) is True
+    assert onboarding.same_chatgpt_project("https://chatgpt.com/auth/login", requested) is False
+    assert onboarding.same_chatgpt_project("https://chatgpt.com/g/g-p-other/project", requested) is False
+    assert onboarding.same_chatgpt_project("https://example.com/g/g-p-demo/project", requested) is False
+
+
 def test_chromium_install_uses_cli_and_writes_versioned_receipt(tmp_path: Path, monkeypatch):
     calls: list[list[str]] = []
 
