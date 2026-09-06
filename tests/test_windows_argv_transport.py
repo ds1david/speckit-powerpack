@@ -39,7 +39,10 @@ def test_windows_transport_uses_encoded_powershell_and_preserves_complex_eval(mo
     assert argv[:4] == ["powershell.exe", "-NoProfile", "-NonInteractive", "-EncodedCommand"]
 
     script = base64.b64decode(argv[4]).decode("utf-16-le")
-    assert "ConvertFrom-Json" in script
+    assert "$decoded = ConvertFrom-Json -InputObject $json" in script
+    assert "$exe = [string]$decoded[0]" in script
+    assert "$rest = [string[]]$decoded[1..($decoded.Count - 1)]" in script
+    assert "$argv = @($json | ConvertFrom-Json)" not in script
     assert "Get-Command $exe" in script
     assert "& $resolved @rest" in script
     assert "Set-Location -LiteralPath $workspace" in script
