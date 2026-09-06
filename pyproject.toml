@@ -22,10 +22,11 @@ Repository = "https://github.com/ds1david/speckit-powerpack"
 Issues = "https://github.com/ds1david/speckit-powerpack/issues"
 
 [project.scripts]
-speckit-powerpack = "speckit_powerpack.cli_account_binding:main"
+speckit-powerpack = "speckit_powerpack.cli_interactive_auth:main"
 
 [tool.setuptools]
-package-dir = {"" = "src"}
+package-dir = {"" = "src"
+}
 include-package-data = true
 
 [tool.setuptools.packages.find]
