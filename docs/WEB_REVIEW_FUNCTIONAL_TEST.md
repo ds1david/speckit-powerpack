@@ -6,12 +6,23 @@ This procedure validates the smallest complete PowerPack Web-review path:
 reviewer account
   -> selected desktop browser
   -> explicit Playwright/CDP attach
-  -> repository-bound ChatGPT Project
+  -> user-scoped repository binding
+  -> ChatGPT Project
   -> real prompt
   -> assistant response captured back in the CLI
 ```
 
-The smoke command never accepts a reviewer profile or Project override. It must use the binding already persisted for the repository in `.specify/powerpack/review.json`.
+The smoke command never accepts a reviewer profile or Project override. It must use the binding already selected for the current Git repository.
+
+Repository/account/Project bindings are **not stored in the worktree**. They live under:
+
+```text
+~/.config/speckit-powerpack/repositories/<repo-id>/review.json
+```
+
+The repository id is derived from the normalized Git remote (`origin` first). This is provider-agnostic and supports GitHub, GitLab, Bitbucket, Azure DevOps and self-hosted Git. A repository without remotes receives a local path-scoped identity.
+
+Transient browser files are excluded locally through `.git/info/exclude`; the PowerPack does not modify the root `.gitignore` for per-user state.
 
 ## 1. Install this development branch
 
@@ -21,6 +32,8 @@ uv tool install --force \
 
 speckit-powerpack install . --integration codex --bootstrap-speckit
 ```
+
+If an earlier PowerPack build wrote reviewer/account/Project values into `.specify/powerpack/review.json`, the new CLI migrates those values to user scope and sanitizes the versionable file automatically.
 
 ## 2. Configure one reviewer account interactively
 
@@ -57,13 +70,25 @@ speckit-powerpack review project select --alias atsel --path .
 
 Alternatively, bind a known Project URL or accept a shared/invite link with the existing project commands.
 
-Inspect the persisted repository binding:
+Inspect the effective persisted binding without knowing the storage path:
 
 ```bash
-jq '.chatgpt_web' .specify/powerpack/review.json
+speckit-powerpack review binding show --path .
 ```
 
-The important fields are the reviewer `profile`, `account_label`, `automation_browser_id`, `project_alias`, `project_url`, and `authorization`.
+For machine-readable output:
+
+```bash
+speckit-powerpack review binding show --path . --json
+```
+
+To print the actual user-scoped file path:
+
+```bash
+speckit-powerpack review binding path --path .
+```
+
+The important values are repository `provider/canonical`, reviewer `profile`, `account_label`, browser identity, `project_alias`, `project_url`, and `authorization`.
 
 ## 4. Strict readiness gate
 
@@ -87,15 +112,16 @@ me diga qual é o nome do projeto e sua principal missão, produza uma resposta 
 
 The command:
 
-1. reads the repository binding;
-2. resolves the authorized reviewer account and browser;
-3. attaches Playwright to that same existing browser context;
-4. opens the exact persisted Project URL and rejects a navigation mismatch;
-5. verifies that the ChatGPT composer is available;
-6. submits the prompt;
-7. waits for a new assistant message to stabilize;
-8. captures the response back into the terminal;
-9. verifies the answer contains the arithmetic result `2` and stays within 100 words.
+1. resolves the current repository from its normalized Git identity;
+2. loads the user-scoped binding outside the worktree;
+3. resolves the authorized reviewer account and browser;
+4. attaches Playwright to that same existing browser context;
+5. opens the exact persisted Project URL and rejects a navigation mismatch;
+6. verifies that the ChatGPT composer is available;
+7. submits the prompt;
+8. waits for a new assistant message to stabilize;
+9. captures the response back into the terminal;
+10. verifies the answer contains the arithmetic result `2` and stays within 100 words.
 
 Expected terminal shape:
 
@@ -126,4 +152,4 @@ speckit-powerpack review smoke-test --path . --json
 
 ## Failure policy
 
-The functional test is fail-closed. It does not automatically change reviewer, browser, backend, account, or Project. If the configured browser cannot be attached, the ChatGPT session is no longer authenticated, the Project URL does not open exactly, the composer cannot be found, or the response cannot be captured, the command exits with an error and the persisted binding remains unchanged.
+The functional test is fail-closed. It does not automatically change reviewer, browser, backend, account, or Project. If the configured browser cannot be attached, the ChatGPT session is no longer authenticated, the Project URL does not open exactly, the composer cannot be found, or the response cannot be captured, the command exits with an error and the persisted user-scoped binding remains unchanged.
