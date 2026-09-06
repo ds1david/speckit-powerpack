@@ -114,6 +114,21 @@ def test_web_prompt_binds_exact_snapshot():
     assert "context_gaps" in prompt
 
 
+def test_first_round_rejects_previous_findings_but_later_final_attestation_can_carry_resolved_history():
+    prior = {"id": "R001-001", "status": "RESOLVED", "evidence": ["fixed and verified"]}
+
+    first = review()
+    first["coverage"]["previous_findings"] = [prior]
+    first_errors = protocol.validate_review(first, manifest=manifest())
+    assert any("previous_findings must be empty on the first review round" in error for error in first_errors)
+
+    later = review()
+    later["round"] = 2
+    later["coverage"]["previous_findings"] = [prior]
+    later_errors = protocol.validate_review(later, manifest=manifest())
+    assert not any("previous_findings must be empty" in error for error in later_errors)
+
+
 def init_feature_repo(tmp_path: Path) -> tuple[Path, Path, Path]:
     repo = tmp_path / "repo"
     repo.mkdir()
