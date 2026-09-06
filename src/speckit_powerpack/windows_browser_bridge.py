@@ -66,13 +66,40 @@ def session_name_for(profile: str) -> str:
     return f"speckit-powerpack-{safe}"
 
 
+def _decode_windows_output(value: bytes | str | None) -> str:
+    """Decode output crossing the WSL -> Windows process boundary.
+
+    Windows console programs are not guaranteed to emit UTF-8. In particular,
+    localized cmd.exe diagnostics commonly use an OEM code page such as CP850,
+    while Node/npm tools normally emit UTF-8. Never let a diagnostic encoding
+    mismatch crash the authorization flow before the actual prerequisite error
+    can be reported to the user.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    for encoding in ("utf-8-sig", "cp850", "cp1252"):
+        try:
+            return value.decode(encoding)
+        except UnicodeDecodeError:
+            continue
+    return value.decode("utf-8", errors="replace")
+
+
 def _run(argv: list[str], *, timeout: int = 120) -> subprocess.CompletedProcess[str]:
     try:
-        return subprocess.run(argv, text=True, capture_output=True, timeout=timeout)
+        proc = subprocess.run(argv, text=False, capture_output=True, timeout=timeout)
     except FileNotFoundError as exc:
         raise WindowsBrowserBridgeError(f"Required command is unavailable: {argv[0]}") from exc
     except subprocess.TimeoutExpired as exc:
         raise WindowsBrowserBridgeError(f"Command timed out: {argv[0]}") from exc
+    return subprocess.CompletedProcess(
+        proc.args,
+        proc.returncode,
+        stdout=_decode_windows_output(proc.stdout),
+        stderr=_decode_windows_output(proc.stderr),
+    )
 
 
 def _windows_cmd(args: Iterable[str], *, timeout: int = 180) -> subprocess.CompletedProcess[str]:
