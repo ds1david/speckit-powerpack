@@ -30,11 +30,37 @@ The initial `speckit-implement` is a mandatory explicit phase. `speckit-implemen
 - Preserve `DISCOVER CAPABILITY -> SELECT STRATEGY -> EXECUTE CONTRACT`.
 - Never bypass a blocked prerequisite, constitution conflict, failed gate or unresolved finding.
 - Never convert convergence/review obligations to technical debt merely to finish the cycle.
-- Never merge, approve, mark ready, force-push or destructively reset as part of this workflow.
+- PRs remain `draft` during implementation, convergence and review work.
+- A PR may become `ready for review` only after implementation/review work is actually complete and only when that transition is required to trigger or validate GitHub CI.
+- After the required CI gates are inspected, immediately return the PR to `draft`, regardless of whether CI passed or failed. Never leave it ready as an incidental workflow state.
+- Never merge, approve, force-push or destructively reset as part of this workflow.
 - `implement_review` requires the same-SPEC completed `implement` receipt.
 - Findings and convergence gaps discovered after the initial implementation stay inside the active `implement-review` loop.
 - `implement_review` must pass `speckit-powerpack doctor --strict-review` before material review work.
 - `DONE` requires Sol/xhigh and mandatory ChatGPT Project Web approval of the same final snapshot.
+
+## PR draft / CI lifecycle
+
+Treat PR readiness as a short-lived CI control state, not as a review/completion state:
+
+```text
+DRAFT
+  -> implementation + convergence + reviews
+  -> implementation/review work complete
+  -> READY only if GitHub CI requires it
+  -> wait for required CI gates
+  -> inspect gate conclusions/evidence
+  -> immediately DRAFT again
+```
+
+Rules:
+
+- Never mark a PR ready merely because a review round starts.
+- Never keep a PR ready while findings are being implemented.
+- Never infer user approval or merge readiness from green CI.
+- CI failure still ends with the PR returned to draft after evidence is collected.
+- Further fixes happen in draft; a later completed snapshot may repeat the temporary ready -> CI -> draft cycle.
+- Merge/approval remains a separate explicit user action outside this workflow.
 
 ## Terminal UX and routing
 
@@ -107,16 +133,15 @@ Before review work, `speckit-implement-review` must prove strict PowerPack readi
 speckit-powerpack doctor --strict-review
 ```
 
-Missing account consent, supported browser backend, live Windows browser session when required, exact Project binding or selected executor is a blocker, not an optional degradation to Codex-only completion.
+Missing account consent, supported browser backend, live desktop browser session when required, exact Project binding or selected executor is a blocker, not an optional degradation to Codex-only completion.
 
-The ChatGPT Web backend may be either:
+The effective account/browser/Project binding is user-scoped and must be resolved with:
 
-```text
-isolated-playwright
-windows-browser-context
+```bash
+speckit-powerpack review binding show --path . --json
 ```
 
-The active backend/profile/account stored in `.specify/powerpack/review.json` is authoritative for the Web gate. Never silently switch accounts or browser backends to make the cycle complete.
+Never silently switch accounts or browser backends to make the cycle complete.
 
 The active `implement_review` phase internally owns:
 
@@ -170,4 +195,4 @@ Abort removes only ephemeral cycle state; SPEC artifacts, implementation changes
 
 ## Completion
 
-`DONE` means the same SPEC passed the explicit implementation predecessor, integrated convergence, quality gates, independent Sol/xhigh review and mandatory ChatGPT Project Web review on the same final snapshot under the configured reviewer account/browser backend. It does NOT mean a GitHub PR is approved, ready or merged.
+`DONE` means the same SPEC passed the explicit implementation predecessor, integrated convergence, quality gates, independent Sol/xhigh review and mandatory ChatGPT Project Web review on the same final snapshot under the configured reviewer account/browser backend. It does NOT mean a PR is approved, mergeable or authorized to merge. After any CI-triggering ready state has served its purpose and required gates were inspected, the PR must be back in `draft`.
