@@ -37,6 +37,8 @@ A manifest becomes stale after any implementation change. Never reuse it after c
 
 The validator automatically binds to `.specify/powerpack/runtime/review-context.json` when run from a PowerPack project. An explicit path may also be supplied with `--manifest`.
 
+Manifest freshness is fail-closed. `validate`, `web-prompt`, `record-escape` and `finalize` recompute the current repository/workspace snapshot and return `BLOCKED_REVIEW_CONTEXT` when HEAD, base SHA, merge-base, changed files, SPEC artifacts, requirement IDs or snapshot digest no longer match the persisted manifest.
+
 ## Required evidence order
 
 Read, when present, in this order:
@@ -98,6 +100,8 @@ On round 2+, validate every finding from the immediately previous review against
 - `REGRESSED`
 
 Do not silently drop or rename previous IDs. A repeated material defect after it was claimed resolved is a repeated-finding condition and must be surfaced explicitly to the PowerPack loop.
+
+Intermediate round validation MUST use `--previous <previous-review.json>` so the validator can prove that every previous finding ID appears exactly once. A final attestation may carry already-resolved `previous_findings` from round 2+ without reclassifying that final review as a first-round review.
 
 ### Pass 2 — full snapshot review
 
@@ -228,7 +232,43 @@ The validator classification is authoritative:
 
 The Web review is an independent second gate, not a confirmation of Sol.
 
-Before Web review, generate the deterministic Web prompt from the same manifest already used for the clean Sol review:
+### Canonical Web execution
+
+The canonical execution path is the PowerPack Playwright runner:
+
+```bash
+speckit-powerpack-web-review --path .
+```
+
+The runner MUST be used by `speckit-implement-review` after Sol is clean for the current manifest. It performs the operational part of the Web gate instead of merely describing it:
+
+1. loads `.specify/powerpack/review.json`;
+2. requires the strict account/profile/Project readiness contract already used by `speckit-powerpack doctor --strict-review`;
+3. regenerates the deterministic Web prompt through `review_protocol.py web-prompt`, which also proves the manifest is still fresh;
+4. launches Chromium with the exact isolated PowerPack profile selected for this repository;
+5. opens the exact configured ChatGPT Project URL;
+6. verifies that the live browser was not redirected to login and that the account is not denied access to the Project;
+7. finds the current ChatGPT prompt composer using bounded selector fallbacks;
+8. submits the exact manifest-bound prompt;
+9. waits for a new assistant response to reach a stable completed state;
+10. persists the raw assistant response to `.specify/powerpack/runtime/web-review.raw.txt` for local diagnostics;
+11. extracts the JSON object to `.specify/powerpack/runtime/web-review.json`;
+12. validates that JSON against the same current manifest before returning success.
+
+The configured `chatgpt_web.headless` value is honored. For diagnosis or explicit user preference it may be overridden per run:
+
+```bash
+speckit-powerpack-web-review --path . --headed
+speckit-powerpack-web-review --path . --headless
+```
+
+A selector/UI change, expired login, inaccessible Project, missing prompt composer, missing assistant response, malformed JSON, stale manifest or validator rejection returns `BLOCKED`; none may degrade into a Codex-only approval.
+
+The runner intentionally opens the Project landing URL for every review invocation instead of trusting whatever conversation happens to be open in the persistent browser profile. Authentication state is reused; review verdict/context is not trusted from a previous browser page.
+
+### Manifest-bound Web prompt
+
+The runner generates the prompt automatically. For diagnostics, the same deterministic prompt can be generated without sending it:
 
 ```bash
 python .specify/powerpack/bin/review_protocol.py web-prompt
@@ -240,7 +280,7 @@ Default output:
 .specify/powerpack/runtime/web-review-prompt.txt
 ```
 
-Submit that exact prompt to the configured ChatGPT Project/account binding. The Web reviewer must use the Project-linked repository/GitHub context to inspect the exact manifest `head_sha`.
+The Web reviewer must use the Project-linked repository/GitHub context to inspect the exact manifest `head_sha`.
 
 If the Web reviewer cannot prove access to the exact head SHA, SPEC artifacts or changed files, it MUST return `BLOCKED`. Login failure, expired browser session, missing Project access, stale Project binding or inability to reach the exact repository snapshot is never an acceptable approval path.
 
@@ -253,7 +293,7 @@ When Sol approved a snapshot but Web finds one or more defects on that **same** 
 ```bash
 python .specify/powerpack/bin/review_protocol.py record-escape \
   --sol-review <sol-review.json> \
-  --web-review <web-review.json>
+  --web-review .specify/powerpack/runtime/web-review.json
 ```
 
 Default append-only log:
@@ -273,7 +313,7 @@ Before completion, execute:
 ```bash
 python .specify/powerpack/bin/review_protocol.py finalize \
   --sol-review <final-sol-review.json> \
-  --web-review <final-web-review.json>
+  --web-review .specify/powerpack/runtime/web-review.json
 ```
 
 `COMPLETE` is emitted only when both reviews:
@@ -281,6 +321,7 @@ python .specify/powerpack/bin/review_protocol.py finalize \
 - are structurally valid;
 - are valid against the current manifest;
 - refer to the exact same immutable snapshot;
-- both return `APPROVED`.
+- both return `APPROVED`;
+- the persisted manifest is still proven fresh against the current workspace at finalization time.
 
 Any implementation change invalidates both approvals and requires a new manifest, fresh Sol review and fresh Web review.
