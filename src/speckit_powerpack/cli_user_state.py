@@ -19,11 +19,8 @@ from . import web2api_windows_lifecycle as windows_lifecycle
 # selectors in the functional review path.
 account_base._review_config = repoctx.review_config
 
-# WSL -> Windows first-login is a long-lived browser interaction. Patch the
-# Web2API command layer with a detached Windows launcher so ending the WSL
-# bootstrap command cannot tear down the reviewer process/Chrome. A REST
-# readiness timeout during first login is reported as waiting-login, not as a
-# fatal backend failure; `review service status` remains the explicit live gate.
+# WSL -> Windows first-login needs a browser lifetime independent from both the
+# WSL command and the Web2API bridge. The lifecycle module owns this bootstrap.
 web2api.start_windows_service = windows_lifecycle.start_windows_service
 web2api.wait_for_service = windows_lifecycle.wait_for_service
 
@@ -72,6 +69,71 @@ def cmd_binding_path(args: argparse.Namespace) -> None:
     print(repoctx.repository_state_dir(project) / "review.json")
 
 
+def cmd_legacy_browser_flow_removed(args: argparse.Namespace) -> None:
+    raise core.PowerPackError(
+        "This Playwright/Chrome-for-Testing onboarding command is legacy and disabled for the functional review path. "
+        "Use 'speckit-powerpack review service start --profile <profile>', then "
+        "'speckit-powerpack review auth configure'."
+    )
+
+
+def cmd_service_start(args: argparse.Namespace) -> None:
+    """WSL-aware service start with explicit remote-debugging onboarding phase."""
+    if not windows_lifecycle.winbridge.is_wsl():
+        web2api.cmd_service_start(args)
+        return
+
+    profile = str(args.profile or web2api._active_profile() or "chatgpt-review")
+    port = int(args.port)
+    cdp_port = int(args.cdp_port)
+    print("Starting the dedicated ChatGPT-Web2API reviewer on the Windows host...")
+    print("PowerPack owns a persistent Google Chrome profile; Web2API only starts after CDP is confirmed live.")
+    print("No cookies/tokens are copied from personal browser profiles into WSL or the repository.")
+    try:
+        info = web2api.start_windows_service(
+            profile=profile,
+            port=port,
+            cdp_port=cdp_port,
+            install=not bool(args.no_install),
+        )
+    except web2api.Web2APIError as exc:
+        raise core.PowerPackError(str(exc)) from exc
+
+    print(f"Dedicated Chrome profile: {info['profile_dir']}")
+    print(f"Browser PID: {info.get('browser_pid') or 'unknown'}")
+    print(f"Service logs: {info['stdout']} | {info['stderr']}")
+    if info.get("browser_stderr"):
+        print(f"Browser log: {info.get('browser_stderr')}")
+
+    phase = str(info.get("phase") or "")
+    if phase == "waiting-remote-debugging":
+        print("\nWAITING FOR CHROME REMOTE DEBUGGING")
+        print("The dedicated Chrome was intentionally left open; Web2API has NOT been started yet.")
+        print("In that SAME Chrome instance:")
+        print("  1. Open chrome://inspect/#remote-debugging")
+        print("  2. Enable 'Allow remote debugging for this browser instance'.")
+        print("  3. Keep Chrome open and complete the ChatGPT/Google login normally.")
+        print("  4. Re-run this same 'review service start' command.")
+        print("No timeout will close the browser during this authorization/login phase.")
+        return
+
+    if phase == "ready":
+        print(f"Reviewer service already ready: {info['endpoint']}")
+        return
+
+    try:
+        state = web2api.wait_for_service(str(info["endpoint"]), timeout=int(args.timeout))
+    except web2api.Web2APIError as exc:
+        raise core.PowerPackError(str(exc)) from exc
+    print(f"Reviewer service started: {info['endpoint']}")
+    print(f"Health: {state.get('status')} chrome={state.get('chrome_running')} cdp={state.get('cdp_connected')}")
+    if state.get("status") == "waiting-login":
+        print("The Chrome process remains independent and will stay open while you finish Google/SSO/MFA.")
+        print("After the normal ChatGPT page is authenticated, re-run 'review service start' or use 'review service status'.")
+    else:
+        print("Complete reviewer configuration with: speckit-powerpack review auth configure")
+
+
 def _wire_web2api_commands(parser: argparse.ArgumentParser) -> None:
     root = account_base._subparsers(parser)
 
@@ -80,6 +142,13 @@ def _wire_web2api_commands(parser: argparse.ArgumentParser) -> None:
 
     review = root.choices["review"]
     rsub = account_base._subparsers(review)
+
+    # The previous Playwright isolated-profile onboarding is not a fallback.
+    # Keep parser compatibility for old scripts, but fail closed with migration
+    # instructions instead of opening Chrome for Testing.
+    for legacy in ("setup", "authorize"):
+        if legacy in rsub.choices:
+            rsub.choices[legacy].set_defaults(func=cmd_legacy_browser_flow_removed)
 
     auth = rsub.choices["auth"]
     asub = account_base._subparsers(auth)
@@ -119,7 +188,7 @@ def _wire_web2api_commands(parser: argparse.ArgumentParser) -> None:
         start.add_argument("--cdp-port", type=int, default=9222)
         start.add_argument("--timeout", type=int, default=45)
         start.add_argument("--no-install", action="store_true", help="Require an existing ChatGPT-Web2API installation")
-        start.set_defaults(func=web2api.cmd_service_start)
+        start.set_defaults(func=cmd_service_start)
         status = ssub.add_parser("status", help="Show live reviewer service health")
         status.add_argument("--endpoint", default=None)
         status.add_argument("--timeout", type=int, default=10)
