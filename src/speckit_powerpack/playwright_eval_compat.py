@@ -108,7 +108,7 @@ def discover_projects(
     print(f"ChatGPT opened in {browser.label} ({env.host_scope}).")
     print("Expand/load the Projects list if necessary, then press Enter here to scan visible Project links.")
     input()
-    expression = """() => {
+    expression = r"""() => {
       const values = new Map();
       for (const a of document.querySelectorAll('a[href]')) {
         try {
