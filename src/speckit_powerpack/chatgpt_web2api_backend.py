@@ -21,6 +21,9 @@ BACKEND_ID = "chatgpt-web2api"
 DEFAULT_ENDPOINT = "http://127.0.0.1:8080"
 DEFAULT_MODEL = "auto"
 PROJECT_ID_RE = re.compile(r"g-p-[A-Za-z0-9]+")
+WEB2API_REPOSITORY = "https://github.com/Octo-Lex/ChatGPT-Web2API"
+WEB2API_REVISION = "497527dceabfa3f95961e23c291e618c5570f1ac"
+WEB2API_INSTALL_URL = f"{WEB2API_REPOSITORY}/archive/{WEB2API_REVISION}.zip"
 
 
 class Web2APIError(RuntimeError):
@@ -277,6 +280,10 @@ def start_windows_service(
     The service and Chrome profile live on the Windows host. PowerPack in WSL
     communicates with the REST endpoint through Windows loopback, so no port
     proxy or browser-cookie copying is needed.
+
+    The upstream reviewer is installed from a pinned GitHub archive rather
+    than PyPI. This keeps the bootstrap reproducible and does not require a
+    Windows Git client.
     """
     if not winbridge.is_wsl():
         raise Web2APIError("Windows reviewer bootstrap is only valid when PowerPack runs under WSL.")
@@ -284,6 +291,7 @@ def start_windows_service(
         raise Web2APIError("REST/CDP ports must be between 1024 and 65535.")
     safe_profile = re.sub(r"[^A-Za-z0-9_.-]+", "-", profile).strip("-._") or "reviewer"
     install_literal = "$true" if install else "$false"
+    source_url = _ps_quote(WEB2API_INSTALL_URL)
     script = f"""
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
@@ -293,19 +301,30 @@ foreach ($name in @('py.exe','python.exe','python')) {{
   $candidate = Get-Command $name -ErrorAction SilentlyContinue
   if ($candidate) {{ $python = $candidate; break }}
 }}
-if (-not $python) {{ throw 'Python 3.11+ is required on Windows. Install Python, then retry.' }}
+if (-not $python) {{
+  [Console]::Error.WriteLine('Python 3.11+ is required on Windows. Install Python, then retry.')
+  exit 10
+}}
 $pythonExe = if ($python.Source) {{ [string]$python.Source }} else {{ [string]$python.Name }}
 $versionText = & $pythonExe -c "import sys; print(f'{{sys.version_info.major}}.{{sys.version_info.minor}}')"
 $parts = $versionText.Trim().Split('.')
 if ([int]$parts[0] -lt 3 -or ([int]$parts[0] -eq 3 -and [int]$parts[1] -lt 11)) {{
-  throw "Python 3.11+ is required on Windows; detected $versionText"
+  [Console]::Error.WriteLine("Python 3.11+ is required on Windows; detected $versionText")
+  exit 11
 }}
 if ({install_literal}) {{
-  & $pythonExe -m pip install --user --upgrade chatgpt-web2api
-  if ($LASTEXITCODE -ne 0) {{ throw 'pip install chatgpt-web2api failed.' }}
+  $source = '{source_url}'
+  $pipOutput = (& $pythonExe -m pip install --disable-pip-version-check --user --upgrade $source 2>&1 | Out-String)
+  if ($LASTEXITCODE -ne 0) {{
+    [Console]::Error.WriteLine("Could not install pinned ChatGPT-Web2API from $source.`n$($pipOutput.Trim())")
+    exit 12
+  }}
 }}
 & $pythonExe -c "import chatgpt_web2api" 2>$null
-if ($LASTEXITCODE -ne 0) {{ throw 'chatgpt-web2api is not installed for the selected Windows Python.' }}
+if ($LASTEXITCODE -ne 0) {{
+  [Console]::Error.WriteLine('ChatGPT-Web2API is not importable for the selected Windows Python after installation.')
+  exit 13
+}}
 $root = Join-Path $env:LOCALAPPDATA 'SpecKitPowerPack\\reviewers\\{_ps_quote(safe_profile)}'
 $chromeProfile = Join-Path $root 'chrome-profile'
 $logs = Join-Path $root 'logs'
@@ -314,7 +333,7 @@ $stdout = Join-Path $logs 'web2api.out.log'
 $stderr = Join-Path $logs 'web2api.err.log'
 $args = @('-m','chatgpt_web2api','start','--host','127.0.0.1','--port','{port}','--cdp-port','{cdp_port}','--user-data-dir',$chromeProfile)
 $proc = Start-Process -FilePath $pythonExe -ArgumentList $args -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru
-@{{ pid=$proc.Id; endpoint='http://127.0.0.1:{port}'; profile_dir=$chromeProfile; stdout=$stdout; stderr=$stderr; python=$pythonExe }} | ConvertTo-Json -Compress
+@{{ pid=$proc.Id; endpoint='http://127.0.0.1:{port}'; profile_dir=$chromeProfile; stdout=$stdout; stderr=$stderr; python=$pythonExe; upstream_revision='{WEB2API_REVISION}' }} | ConvertTo-Json -Compress
 """
     encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
     try:
@@ -322,7 +341,7 @@ $proc = Start-Process -FilePath $pythonExe -ArgumentList $args -RedirectStandard
             ["powershell.exe", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
             text=False,
             capture_output=True,
-            timeout=240,
+            timeout=300,
         )
     except FileNotFoundError as exc:
         raise Web2APIError("powershell.exe is unavailable from WSL.") from exc
