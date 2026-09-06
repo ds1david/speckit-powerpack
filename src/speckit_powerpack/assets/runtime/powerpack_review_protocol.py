@@ -80,7 +80,10 @@ def find_project_root(start: Path | None = None) -> Path | None:
 def resolve_feature_dir(root: Path, explicit: str | None) -> Path:
     if explicit:
         path = Path(explicit)
-        return (path if path.is_absolute() else root / path).resolve()
+        resolved = (path if path.is_absolute() else root / path).resolve()
+        if not resolved.is_dir():
+            raise RuntimeError(f"feature directory does not exist: {resolved}")
+        return resolved
     branch = _run(root, "git", "branch", "--show-current")
     specs = root / "specs"
     direct = specs / branch
@@ -94,8 +97,10 @@ def resolve_feature_dir(root: Path, explicit: str | None) -> Path:
 
 def finding_fingerprint(finding: dict[str, Any]) -> str:
     canonical = "|".join([
-        _norm(finding.get("category")), _norm(finding.get("title")),
-        _norm(finding.get("file")), _norm(finding.get("line")),
+        _norm(finding.get("category")),
+        _norm(finding.get("title")),
+        _norm(finding.get("file")),
+        _norm(finding.get("line")),
         _norm(finding.get("failure_scenario")),
     ])
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
@@ -147,7 +152,11 @@ def _changed_files(root: Path, merge_base: str) -> list[str]:
     if proc.returncode != 0:
         raise RuntimeError((proc.stderr or b"git diff failed").decode(errors="replace").strip())
     changed = {item.decode(errors="replace") for item in proc.stdout.split(b"\0") if item}
-    untracked = subprocess.run(["git", "ls-files", "--others", "--exclude-standard", "-z"], cwd=str(root), capture_output=True)
+    untracked = subprocess.run(
+        ["git", "ls-files", "--others", "--exclude-standard", "-z"],
+        cwd=str(root),
+        capture_output=True,
+    )
     if untracked.returncode == 0:
         changed.update(item.decode(errors="replace") for item in untracked.stdout.split(b"\0") if item)
     return sorted(changed)
@@ -180,8 +189,11 @@ def build_manifest(root: Path, feature: Path, base_ref: str | None = None) -> di
         spec_id = feature.name
     requirements = _requirement_ids(root, artifacts)
     identity = {
-        "spec_id": spec_id, "base_ref": selected_base, "base_sha": base_sha,
-        "merge_base": merge_base, "head_sha": head_sha,
+        "spec_id": spec_id,
+        "base_ref": selected_base,
+        "base_sha": base_sha,
+        "merge_base": merge_base,
+        "head_sha": head_sha,
     }
     digest = _snapshot_digest(root, identity, changed, artifacts)
     return {
@@ -199,6 +211,7 @@ def build_manifest(root: Path, feature: Path, base_ref: str | None = None) -> di
             "inspection_evidence_required": True,
             "verdict_challenge_required": True,
             "context_gaps_block_approval": True,
+            "manifest_freshness_required": True,
         },
     }
 
@@ -213,6 +226,48 @@ def load_manifest_for_validation(explicit: str | None) -> dict[str, Any] | None:
         return load_json(Path(explicit))
     auto = _manifest_path_from_cwd()
     return load_json(auto) if auto and auto.is_file() else None
+
+
+def validate_manifest_freshness(manifest: dict[str, Any], root: Path | None = None) -> list[str]:
+    """Prove that a persisted manifest still describes the current repository/workspace."""
+    project_root = root or find_project_root()
+    if project_root is None:
+        return [f"{MANIFEST_PREFIX} cannot prove manifest freshness because project root is unavailable"]
+    project_root = project_root.resolve()
+    context = manifest.get("review_context")
+    if not isinstance(context, dict):
+        return [f"{MANIFEST_PREFIX} manifest review_context is missing"]
+    spec_id = str(context.get("spec_id") or "").strip()
+    base_ref = str(context.get("base_ref") or "").strip()
+    if not spec_id or not base_ref:
+        return [f"{MANIFEST_PREFIX} manifest spec_id/base_ref is incomplete"]
+    feature = (project_root / spec_id).resolve()
+    try:
+        feature.relative_to(project_root)
+    except ValueError:
+        return [f"{MANIFEST_PREFIX} manifest spec_id resolves outside project root: {spec_id}"]
+    if not feature.is_dir():
+        return [f"{MANIFEST_PREFIX} manifest feature directory no longer exists: {spec_id}"]
+    try:
+        current = build_manifest(project_root, feature, base_ref)
+    except RuntimeError as exc:
+        return [f"{MANIFEST_PREFIX} cannot recompute current snapshot: {exc}"]
+
+    errors: list[str] = []
+    expected_context = manifest.get("review_context") if isinstance(manifest.get("review_context"), dict) else {}
+    current_context = current["review_context"]
+    for field in sorted(CONTEXT_FIELDS):
+        if current_context.get(field) != expected_context.get(field):
+            errors.append(
+                f"{MANIFEST_PREFIX} manifest is stale: current review_context.{field} "
+                f"is {current_context.get(field)!r}, manifest has {expected_context.get(field)!r}"
+            )
+    for field in ("spec_artifacts", "requirements", "changed_files", "required_context_files"):
+        current_values = _list(current.get(field))
+        manifest_values = _list(manifest.get(field))
+        if current_values != manifest_values:
+            errors.append(f"{MANIFEST_PREFIX} manifest is stale: current {field} differs from persisted manifest")
+    return errors
 
 
 def validate_manifest_bound_review(review: dict[str, Any], manifest: dict[str, Any]) -> list[str]:
@@ -242,13 +297,15 @@ def validate_manifest_bound_review(review: dict[str, Any], manifest: dict[str, A
         errors.append(f"{MANIFEST_PREFIX} required context files were not inspected: {', '.join(missing_context)}")
     expected_requirements = {str(item) for item in _list(manifest.get("requirements"))}
     actual_requirements = {
-        str(item.get("id")) for item in _list(coverage.get("requirements"))
+        str(item.get("id"))
+        for item in _list(coverage.get("requirements"))
         if isinstance(item, dict) and item.get("id")
     }
     if expected_requirements and actual_requirements != expected_requirements:
         errors.append(
             f"{MANIFEST_PREFIX} requirements coverage must exactly match manifest; "
-            f"missing={sorted(expected_requirements - actual_requirements)}, extra={sorted(actual_requirements - expected_requirements)}"
+            f"missing={sorted(expected_requirements - actual_requirements)}, "
+            f"extra={sorted(actual_requirements - expected_requirements)}"
         )
     evidence_by_file: set[str] = set()
     for index, item in enumerate(_list(coverage.get("inspection_evidence"))):
@@ -285,13 +342,18 @@ def validate_manifest_bound_review(review: dict[str, Any], manifest: dict[str, A
     return errors
 
 
-def validate_review(review: dict[str, Any], previous: dict[str, Any] | None = None, manifest: dict[str, Any] | None = None) -> list[str]:
+def validate_review(
+    review: dict[str, Any],
+    previous: dict[str, Any] | None = None,
+    manifest: dict[str, Any] | None = None,
+) -> list[str]:
     errors: list[str] = []
     if review.get("schema_version") != SCHEMA_VERSION:
         errors.append(f"schema_version must be {SCHEMA_VERSION}")
     verdict = review.get("verdict")
     if verdict not in VERDICTS:
         errors.append(f"verdict must be one of {sorted(VERDICTS)}")
+
     context = review.get("review_context")
     if not isinstance(context, dict):
         errors.append("review_context must be an object")
@@ -306,6 +368,7 @@ def validate_review(review: dict[str, Any], previous: dict[str, Any] | None = No
     digest = context.get("snapshot_sha256")
     if digest and not HEX64.match(str(digest)):
         errors.append("review_context.snapshot_sha256 must be a 64-character SHA-256 digest")
+
     coverage = review.get("coverage")
     if not isinstance(coverage, dict):
         errors.append("coverage must be an object")
@@ -316,6 +379,7 @@ def validate_review(review: dict[str, Any], previous: dict[str, Any] | None = No
     baselines = _list(coverage.get("baseline_scenarios"))
     previous_findings = _list(coverage.get("previous_findings"))
     fronts = _list(coverage.get("fronts"))
+
     if not changed:
         errors.append("coverage.changed_files must not be empty")
     if not inspected:
@@ -327,6 +391,7 @@ def validate_review(review: dict[str, Any], previous: dict[str, Any] | None = No
         errors.append("coverage.requirements must not be empty when spec_id is present")
     if not baselines:
         errors.append("coverage.baseline_scenarios must not be empty")
+
     for index, item in enumerate(requirements):
         if not isinstance(item, dict) or item.get("status") not in REQUIREMENT_STATUSES:
             errors.append(f"coverage.requirements[{index}].status is invalid")
@@ -337,6 +402,7 @@ def validate_review(review: dict[str, Any], previous: dict[str, Any] | None = No
             errors.append(f"coverage.baseline_scenarios[{index}].result is invalid")
         elif not _list(item.get("evidence")):
             errors.append(f"coverage.baseline_scenarios[{index}].evidence must not be empty")
+
     front_names: list[str] = []
     for index, item in enumerate(fronts):
         if not isinstance(item, dict):
@@ -344,13 +410,14 @@ def validate_review(review: dict[str, Any], previous: dict[str, Any] | None = No
             continue
         name, status = item.get("name"), item.get("status")
         if name:
-            front_names.append(name)
+            front_names.append(str(name))
         if status not in FRONT_STATUSES:
             errors.append(f"coverage.fronts[{index}].status is invalid")
         if not _list(item.get("evidence")):
             errors.append(f"coverage.fronts[{index}].evidence must not be empty")
     if set(front_names) != set(FRONTS) or len(front_names) != len(FRONTS):
         errors.append("coverage.fronts must contain every required review front exactly once")
+
     findings = _list(review.get("findings"))
     for index, finding in enumerate(findings):
         if not isinstance(finding, dict):
@@ -361,6 +428,7 @@ def validate_review(review: dict[str, Any], previous: dict[str, Any] | None = No
             errors.append(f"findings[{index}] missing fields: {', '.join(missing)}")
         if not _list(finding.get("acceptance_criteria")):
             errors.append(f"findings[{index}].acceptance_criteria must not be empty")
+
     seen_previous: set[str] = set()
     prior_status_by_id: dict[str, str] = {}
     for index, item in enumerate(previous_findings):
@@ -375,6 +443,7 @@ def validate_review(review: dict[str, Any], previous: dict[str, Any] | None = No
             errors.append(f"coverage.previous_findings[{index}].status is invalid")
         if not _list(item.get("evidence")):
             errors.append(f"coverage.previous_findings[{index}].evidence must not be empty")
+
     if previous is not None:
         previous_items = [item for item in _list(previous.get("findings")) if isinstance(item, dict)]
         expected = {str(item.get("id")) for item in previous_items if item.get("id")}
@@ -386,11 +455,18 @@ def validate_review(review: dict[str, Any], previous: dict[str, Any] | None = No
             if item_id and prior_status_by_id.get(item_id) == "RESOLVED":
                 resolved_fingerprints[finding_fingerprint(item)] = item_id
         for current in findings:
-            if isinstance(current, dict) and finding_fingerprint(current) in resolved_fingerprints:
-                previous_id = resolved_fingerprints[finding_fingerprint(current)]
-                errors.append(f"{REPEATED_PREFIX} previous finding {previous_id} was declared RESOLVED but materially reappeared as {current.get('id')}")
+            if not isinstance(current, dict):
+                continue
+            fingerprint = finding_fingerprint(current)
+            if fingerprint in resolved_fingerprints:
+                previous_id = resolved_fingerprints[fingerprint]
+                errors.append(
+                    f"{REPEATED_PREFIX} previous finding {previous_id} was declared RESOLVED "
+                    f"but materially reappeared as {current.get('id')}"
+                )
     elif previous_findings:
         errors.append("coverage.previous_findings must be empty on the first review round")
+
     front_statuses = {item.get("status") for item in fronts if isinstance(item, dict)}
     if verdict == "APPROVED":
         if findings:
@@ -410,6 +486,7 @@ def validate_review(review: dict[str, Any], previous: dict[str, Any] | None = No
             errors.append("CHANGES_REQUIRED requires at least one FINDINGS review front")
     elif verdict == "BLOCKED" and "BLOCKED" not in front_statuses:
         errors.append("BLOCKED requires at least one BLOCKED review front")
+
     if manifest is not None:
         errors.extend(validate_manifest_bound_review(review, manifest))
     return errors
@@ -439,8 +516,15 @@ def cmd_manifest(args: argparse.Namespace) -> int:
         output = root / output
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    print(json.dumps({"status": "READY", "manifest": str(output), "review_context": manifest["review_context"]}, ensure_ascii=False))
+    print(json.dumps(
+        {"status": "READY", "manifest": str(output), "review_context": manifest["review_context"]},
+        ensure_ascii=False,
+    ))
     return 0
+
+
+def _freshness_errors(manifest: dict[str, Any] | None) -> list[str]:
+    return validate_manifest_freshness(manifest) if manifest is not None else []
 
 
 def cmd_validate(args: argparse.Namespace) -> int:
@@ -448,14 +532,25 @@ def cmd_validate(args: argparse.Namespace) -> int:
     previous = load_json(Path(args.previous)) if args.previous else None
     manifest = load_manifest_for_validation(args.manifest)
     errors = validate_review(review, previous, manifest)
+    freshness = _freshness_errors(manifest)
+    errors.extend(freshness)
     classification = classify_errors(errors)
     print(json.dumps({
-        "valid": not errors, "classification": classification, "schema_version": SCHEMA_VERSION,
-        "manifest_bound": manifest is not None, "verdict": review.get("verdict"), "errors": errors,
+        "valid": not errors,
+        "classification": classification,
+        "schema_version": SCHEMA_VERSION,
+        "manifest_bound": manifest is not None,
+        "manifest_fresh": manifest is not None and not freshness,
+        "verdict": review.get("verdict"),
+        "errors": errors,
     }, ensure_ascii=False, indent=2))
     if not errors:
         return 0
-    return 3 if classification == "BLOCKED_REPEATED_FINDING" else 4 if classification == "BLOCKED_REVIEW_CONTEXT" else 2
+    if classification == "BLOCKED_REPEATED_FINDING":
+        return 3
+    if classification == "BLOCKED_REVIEW_CONTEXT":
+        return 4
+    return 2
 
 
 def web_prompt(manifest: dict[str, Any]) -> str:
@@ -485,7 +580,15 @@ def cmd_web_prompt(args: argparse.Namespace) -> int:
     if not manifest_path or not manifest_path.is_file():
         print(json.dumps({"status": "BLOCKED", "reason": "review-context-manifest-missing"}))
         return 4
-    prompt = web_prompt(load_json(manifest_path))
+    manifest = load_json(manifest_path)
+    freshness = validate_manifest_freshness(manifest)
+    if freshness:
+        print(json.dumps(
+            {"status": "BLOCKED", "reason": "stale-review-context-manifest", "errors": freshness},
+            ensure_ascii=False,
+        ))
+        return 4
+    prompt = web_prompt(manifest)
     root = find_project_root()
     output = Path(args.output) if args.output else ((root / DEFAULT_WEB_PROMPT_RELATIVE) if root else None)
     if output:
@@ -506,12 +609,21 @@ def _same_snapshot(left: dict[str, Any], right: dict[str, Any]) -> bool:
 
 
 def cmd_record_escape(args: argparse.Namespace) -> int:
-    sol, web = load_json(Path(args.sol_review)), load_json(Path(args.web_review))
+    sol = load_json(Path(args.sol_review))
+    web = load_json(Path(args.web_review))
     manifest = load_manifest_for_validation(args.manifest)
     if manifest is None:
         print(json.dumps({"status": "BLOCKED", "reason": "review-context-manifest-missing"}))
         return 4
-    sol_errors, web_errors = validate_review(sol, manifest=manifest), validate_review(web, manifest=manifest)
+    freshness = validate_manifest_freshness(manifest)
+    if freshness:
+        print(json.dumps(
+            {"status": "BLOCKED", "reason": "stale-review-context-manifest", "errors": freshness},
+            ensure_ascii=False,
+        ))
+        return 4
+    sol_errors = validate_review(sol, manifest=manifest)
+    web_errors = validate_review(web, manifest=manifest)
     if sol_errors or web_errors:
         print(json.dumps({"status": "BLOCKED", "sol_errors": sol_errors, "web_errors": web_errors}, ensure_ascii=False))
         return 4
@@ -523,13 +635,24 @@ def cmd_record_escape(args: argparse.Namespace) -> int:
         print(json.dumps({"status": "NO_ESCAPE", "recorded": False}))
         return 0
     event = {
-        "schema_version": 1, "recorded_at": utc_now(), "snapshot": manifest.get("review_context"),
-        "local_reviewer": sol.get("reviewer") or "codex-sol", "web_reviewer": web.get("reviewer") or "chatgpt-web",
+        "schema_version": 1,
+        "recorded_at": utc_now(),
+        "snapshot": manifest.get("review_context"),
+        "local_reviewer": sol.get("reviewer") or "codex-sol",
+        "web_reviewer": web.get("reviewer") or "chatgpt-web",
         "escaped_finding_count": len(web_findings),
-        "escaped_findings": [{
-            "id": item.get("id"), "severity": item.get("severity"), "category": item.get("category"),
-            "title": item.get("title"), "file": item.get("file"), "line": item.get("line"),
-        } for item in web_findings if isinstance(item, dict)],
+        "escaped_findings": [
+            {
+                "id": item.get("id"),
+                "severity": item.get("severity"),
+                "category": item.get("category"),
+                "title": item.get("title"),
+                "file": item.get("file"),
+                "line": item.get("line"),
+            }
+            for item in web_findings
+            if isinstance(item, dict)
+        ],
     }
     root = find_project_root()
     output = Path(args.output) if args.output else ((root / DEFAULT_ESCAPE_LOG_RELATIVE) if root else None)
@@ -541,25 +664,46 @@ def cmd_record_escape(args: argparse.Namespace) -> int:
     output.parent.mkdir(parents=True, exist_ok=True)
     with output.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(event, ensure_ascii=False) + "\n")
-    print(json.dumps({"status": "REVIEW_ESCAPE", "recorded": True, "output": str(output), "event": event}, ensure_ascii=False))
+    print(json.dumps(
+        {"status": "REVIEW_ESCAPE", "recorded": True, "output": str(output), "event": event},
+        ensure_ascii=False,
+    ))
     return 0
 
 
 def cmd_finalize(args: argparse.Namespace) -> int:
-    sol, web = load_json(Path(args.sol_review)), load_json(Path(args.web_review))
+    sol = load_json(Path(args.sol_review))
+    web = load_json(Path(args.web_review))
     manifest = load_manifest_for_validation(args.manifest)
     if manifest is None:
         print(json.dumps({"status": "BLOCKED", "reason": "review-context-manifest-missing"}))
         return 4
-    sol_errors, web_errors = validate_review(sol, manifest=manifest), validate_review(web, manifest=manifest)
+    freshness = validate_manifest_freshness(manifest)
+    if freshness:
+        print(json.dumps({
+            "status": "BLOCKED",
+            "reason": "stale-review-context-manifest",
+            "errors": freshness,
+        }, ensure_ascii=False))
+        return 4
+    sol_errors = validate_review(sol, manifest=manifest)
+    web_errors = validate_review(web, manifest=manifest)
     if sol_errors or web_errors:
-        print(json.dumps({"status": "BLOCKED", "reason": "invalid-review-contract", "errors": {"sol": sol_errors, "web": web_errors}}, ensure_ascii=False))
+        print(json.dumps({
+            "status": "BLOCKED",
+            "reason": "invalid-review-contract",
+            "errors": {"sol": sol_errors, "web": web_errors},
+        }, ensure_ascii=False))
         return 4
     if not _same_snapshot(sol, web):
         print(json.dumps({"status": "BLOCKED", "reason": "review-snapshots-differ"}))
         return 4
     if sol.get("verdict") != "APPROVED" or web.get("verdict") != "APPROVED":
-        print(json.dumps({"status": "CHANGES_REQUIRED", "sol": sol.get("verdict"), "web": web.get("verdict")}))
+        print(json.dumps({
+            "status": "CHANGES_REQUIRED",
+            "sol": sol.get("verdict"),
+            "web": web.get("verdict"),
+        }))
         return 5
     print(json.dumps({"status": "COMPLETE", "snapshot": manifest.get("review_context")}, ensure_ascii=False))
     return 0
@@ -568,11 +712,36 @@ def cmd_finalize(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="powerpack-review-protocol")
     sub = parser.add_subparsers(dest="command", required=True)
-    p = sub.add_parser("manifest"); p.add_argument("--feature-dir"); p.add_argument("--base-ref"); p.add_argument("--output"); p.set_defaults(func=cmd_manifest)
-    p = sub.add_parser("validate"); p.add_argument("--input", required=True); p.add_argument("--previous"); p.add_argument("--manifest"); p.set_defaults(func=cmd_validate)
-    p = sub.add_parser("web-prompt"); p.add_argument("--manifest"); p.add_argument("--output"); p.set_defaults(func=cmd_web_prompt)
-    p = sub.add_parser("record-escape"); p.add_argument("--sol-review", required=True); p.add_argument("--web-review", required=True); p.add_argument("--manifest"); p.add_argument("--output"); p.set_defaults(func=cmd_record_escape)
-    p = sub.add_parser("finalize"); p.add_argument("--sol-review", required=True); p.add_argument("--web-review", required=True); p.add_argument("--manifest"); p.set_defaults(func=cmd_finalize)
+
+    p = sub.add_parser("manifest")
+    p.add_argument("--feature-dir")
+    p.add_argument("--base-ref")
+    p.add_argument("--output")
+    p.set_defaults(func=cmd_manifest)
+
+    p = sub.add_parser("validate")
+    p.add_argument("--input", required=True)
+    p.add_argument("--previous")
+    p.add_argument("--manifest")
+    p.set_defaults(func=cmd_validate)
+
+    p = sub.add_parser("web-prompt")
+    p.add_argument("--manifest")
+    p.add_argument("--output")
+    p.set_defaults(func=cmd_web_prompt)
+
+    p = sub.add_parser("record-escape")
+    p.add_argument("--sol-review", required=True)
+    p.add_argument("--web-review", required=True)
+    p.add_argument("--manifest")
+    p.add_argument("--output")
+    p.set_defaults(func=cmd_record_escape)
+
+    p = sub.add_parser("finalize")
+    p.add_argument("--sol-review", required=True)
+    p.add_argument("--web-review", required=True)
+    p.add_argument("--manifest")
+    p.set_defaults(func=cmd_finalize)
     return parser
 
 
