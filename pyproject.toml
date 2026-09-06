@@ -22,7 +22,7 @@ Repository = "https://github.com/ds1david/speckit-powerpack"
 Issues = "https://github.com/ds1david/speckit-powerpack/issues"
 
 [project.scripts]
-speckit-powerpack = "speckit_powerpack.cli_web_review:main"
+speckit-powerpack = "speckit_powerpack.cli_user_state:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
