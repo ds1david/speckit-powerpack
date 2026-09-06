@@ -31,19 +31,18 @@ def start_windows_service(
     cdp_port: int,
     install: bool = True,
 ) -> dict[str, Any]:
-    """Start a reviewer with browser/service lifecycles separated on Windows.
+    """Start the Windows reviewer without letting Web2API own first-login Chrome.
 
-    First-login is intentionally two-process:
+    Chrome 144+ can require an explicit per-browser-instance remote-debugging
+    consent at chrome://inspect/#remote-debugging. Starting Web2API before that
+    consent is granted makes upstream wait 30 seconds for CDP and then close the
+    Chrome process it owns. PowerPack therefore uses a two-phase bootstrap:
 
-    1. PowerPack launches the dedicated Chrome itself as a detached process and
-       waits only for the CDP port. The browser therefore survives a Web2API
-       crash, login timeout, WSL shell exit, or service restart.
-    2. Web2API starts only after CDP is live. Upstream then *attaches* to that
-       Chrome instead of owning its lifecycle, so aborting/restarting the REST
-       bridge cannot close the browser while Google/SSO/MFA is in progress.
-
-    A stale service process whose REST endpoint never came up is replaced before
-    the new bridge starts. Chrome is reused whenever its CDP endpoint is alive.
+    * launch/reuse a detached dedicated Chrome owned by PowerPack;
+    * if CDP is not live, return ``waiting-remote-debugging`` and leave Chrome
+      open indefinitely so the user can grant consent and complete SSO/MFA;
+    * only when CDP is proven live start Web2API, which then attaches as a
+      non-owner and cannot close the browser on bridge failure/restart.
     """
     if not winbridge.is_wsl():
         raise Web2APIError("Detached Windows reviewer bootstrap is only valid under WSL.")
@@ -197,12 +196,12 @@ if (Test-HttpOk $healthUrl 2) {{
   if (Test-Path $servicePidFile) {{ [int]::TryParse([string](Get-Content $servicePidFile -ErrorAction SilentlyContinue | Select-Object -First 1), [ref]$servicePid) | Out-Null }}
   $browserPid = 0
   if (Test-Path $browserPidFile) {{ [int]::TryParse([string](Get-Content $browserPidFile -ErrorAction SilentlyContinue | Select-Object -First 1), [ref]$browserPid) | Out-Null }}
-  @{{ pid=$servicePid; browser_pid=$browserPid; endpoint=$endpoint; profile_dir=$chromeProfile; venv=$venv; stdout=$serviceOut; stderr=$serviceErr; browser_stdout=$browserOut; browser_stderr=$browserErr; python=$servicePython; upstream_revision='{WEB2API_REVISION}'; reused=$true; detached=$true; browser_detached=$true }} | ConvertTo-Json -Compress
+  @{{ phase='ready'; pid=$servicePid; browser_pid=$browserPid; endpoint=$endpoint; profile_dir=$chromeProfile; venv=$venv; stdout=$serviceOut; stderr=$serviceErr; browser_stdout=$browserOut; browser_stderr=$browserErr; python=$servicePython; upstream_revision='{WEB2API_REVISION}'; reused=$true; detached=$true; browser_detached=$true }} | ConvertTo-Json -Compress
   exit 0
 }}
 
-# If a previous bridge is alive but never exposed REST, replace it. Its driver
-# may still point at the Chrome target that disappeared during an earlier login.
+# Stale bridge: never let it keep driving a browser whose CDP/login state is
+# being repaired. The browser itself is handled separately below.
 if (Test-Path $servicePidFile) {{
   $existingText = (Get-Content $servicePidFile -ErrorAction SilentlyContinue | Select-Object -First 1)
   $existingPid = 0
@@ -210,14 +209,14 @@ if (Test-Path $servicePidFile) {{
     $existing = Get-Process -Id $existingPid -ErrorAction SilentlyContinue
     if ($existing) {{
       Stop-Process -Id $existingPid -Force -ErrorAction SilentlyContinue
-      Start-Sleep -Milliseconds 700
+      Start-Sleep -Milliseconds 500
     }}
   }}
   Remove-Item $servicePidFile -Force -ErrorAction SilentlyContinue
 }}
 
-# Resolve Chrome explicitly. We launch it ourselves so Web2API attaches as a
-# non-owner and cannot close the browser when its own process exits/restarts.
+# Resolve Chrome explicitly. PowerPack owns this browser process; Web2API will
+# only attach after CDP consent is proven live.
 $chromeExe = $null
 $chromeCandidates = @()
 if ($env:ProgramFiles) {{ $chromeCandidates += (Join-Path $env:ProgramFiles 'Google\\Chrome\\Application\\chrome.exe') }}
@@ -233,36 +232,24 @@ if (-not $chromeExe) {{
   exit 16
 }}
 
-$browserReused = Test-HttpOk $cdpUrl 2
 $browserPid = 0
-if (-not $browserReused) {{
-  if (Test-Path $browserPidFile) {{
-    $oldBrowserText = (Get-Content $browserPidFile -ErrorAction SilentlyContinue | Select-Object -First 1)
-    $oldBrowserPid = 0
-    if ([int]::TryParse([string]$oldBrowserText, [ref]$oldBrowserPid)) {{
-      $oldBrowser = Get-Process -Id $oldBrowserPid -ErrorAction SilentlyContinue
-      if ($oldBrowser) {{
-        # Give a just-starting dedicated Chrome a short chance to expose CDP.
-        if (-not (Wait-HttpOk $cdpUrl 5)) {{
-          Stop-Process -Id $oldBrowserPid -Force -ErrorAction SilentlyContinue
-          Start-Sleep -Milliseconds 700
-        }} else {{
-          $browserReused = $true
-          $browserPid = $oldBrowserPid
-        }}
-      }}
-    }}
-    if (-not $browserReused) {{ Remove-Item $browserPidFile -Force -ErrorAction SilentlyContinue }}
+$browserAlive = $false
+if (Test-Path $browserPidFile) {{
+  $browserText = (Get-Content $browserPidFile -ErrorAction SilentlyContinue | Select-Object -First 1)
+  if ([int]::TryParse([string]$browserText, [ref]$browserPid)) {{
+    $browserAlive = $null -ne (Get-Process -Id $browserPid -ErrorAction SilentlyContinue)
   }}
+  if (-not $browserAlive) {{ Remove-Item $browserPidFile -Force -ErrorAction SilentlyContinue }}
 }}
 
-if (-not $browserReused) {{
+if (-not $browserAlive) {{
   $browserArgv = @(
     $chromeExe,
     '--remote-debugging-port={cdp_port}',
     "--user-data-dir=$chromeProfile",
     '--no-first-run',
     '--no-default-browser-check',
+    'chrome://inspect/#remote-debugging',
     'https://chatgpt.com/'
   )
   @{{ argv=$browserArgv; stdout=$browserOut; stderr=$browserErr; cwd=$root }} | ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 $browserSpecPath
@@ -273,16 +260,19 @@ if (-not $browserReused) {{
     exit 17
   }}
   [IO.File]::WriteAllText($browserPidFile, [string]$browserPid)
-  if (-not (Wait-HttpOk $cdpUrl 20)) {{
-    [Console]::Error.WriteLine("Dedicated Chrome started as PID $browserPid but CDP did not become reachable at $cdpUrl. See $browserErr")
-    exit 18
-  }}
-}} elseif ($browserPid -eq 0 -and (Test-Path $browserPidFile)) {{
-  [int]::TryParse([string](Get-Content $browserPidFile -ErrorAction SilentlyContinue | Select-Object -First 1), [ref]$browserPid) | Out-Null
+  $browserAlive = $true
 }}
 
-# CDP is live before Web2API starts. Upstream ChromeProcess therefore attaches
-# to the already-running browser and does not own/kill it.
+# Chrome 144+ may ignore the requested CDP endpoint until the user explicitly
+# checks 'Allow remote debugging for this browser instance'. This is a valid
+# onboarding state, not a service failure. Crucially: do NOT start Web2API yet,
+# because upstream would own/wait/kill Chrome after its 30s CDP timeout.
+if (-not (Wait-HttpOk $cdpUrl 3)) {{
+  @{{ phase='waiting-remote-debugging'; pid=0; browser_pid=$browserPid; endpoint=$endpoint; cdp_endpoint='http://127.0.0.1:{cdp_port}'; profile_dir=$chromeProfile; venv=$venv; stdout=$serviceOut; stderr=$serviceErr; browser_stdout=$browserOut; browser_stderr=$browserErr; python=$servicePython; upstream_revision='{WEB2API_REVISION}'; reused=$browserAlive; detached=$true; browser_detached=$true }} | ConvertTo-Json -Compress
+  exit 0
+}}
+
+# CDP is now live. Web2API sees an existing Chrome and attaches as non-owner.
 $serviceArgv = @($servicePython,'-m','chatgpt_web2api','start','--host','127.0.0.1','--port','{port}','--cdp-port','{cdp_port}','--user-data-dir',$chromeProfile)
 @{{ argv=$serviceArgv; stdout=$serviceOut; stderr=$serviceErr; cwd=$root }} | ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 $serviceSpecPath
 try {{
@@ -295,7 +285,7 @@ try {{
 }}
 [IO.File]::WriteAllText($servicePidFile, [string]$servicePid)
 
-@{{ pid=$servicePid; browser_pid=$browserPid; endpoint=$endpoint; profile_dir=$chromeProfile; venv=$venv; stdout=$serviceOut; stderr=$serviceErr; browser_stdout=$browserOut; browser_stderr=$browserErr; python=$servicePython; upstream_revision='{WEB2API_REVISION}'; reused=$false; detached=$true; browser_detached=$true; browser_reused=$browserReused }} | ConvertTo-Json -Compress
+@{{ phase='service-started'; pid=$servicePid; browser_pid=$browserPid; endpoint=$endpoint; cdp_endpoint='http://127.0.0.1:{cdp_port}'; profile_dir=$chromeProfile; venv=$venv; stdout=$serviceOut; stderr=$serviceErr; browser_stdout=$browserOut; browser_stderr=$browserErr; python=$servicePython; upstream_revision='{WEB2API_REVISION}'; reused=$false; detached=$true; browser_detached=$true }} | ConvertTo-Json -Compress
 """
 
     encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
@@ -322,13 +312,7 @@ try {{
 
 
 def wait_for_service(endpoint: str, *, timeout: int = 10) -> dict[str, Any]:
-    """Wait briefly for REST readiness without owning the login duration.
-
-    The dedicated Chrome is now independent of the REST bridge. If the account
-    still needs Google/SSO/MFA, the CLI returns WAITING_FOR_LOGIN quickly and
-    leaves the browser open indefinitely for the user to finish. `service
-    status` is the explicit live gate after login.
-    """
+    """Wait briefly for REST readiness after CDP has already been proven live."""
     deadline = time.monotonic() + max(1, timeout)
     last: Exception | None = None
     while time.monotonic() < deadline:
