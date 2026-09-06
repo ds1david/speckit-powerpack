@@ -61,10 +61,12 @@ def test_review_defaults_require_platform_scoped_web_accounts_and_projects():
     assert review["deep_review"]["adversarial_verdict_challenge"] is True
 
 
-def test_playwright_is_a_core_runtime_dependency_and_desktop_auth_cli_is_entrypoint():
+def test_playwright_is_core_dependency_and_browser_account_cli_is_entrypoint():
     pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
     assert 'dependencies = ["playwright>=1.55,<2"]' in pyproject
-    assert 'speckit-powerpack = "speckit_powerpack.cli_desktop_auth:main"' in pyproject
+    assert 'speckit-powerpack = "speckit_powerpack.cli_browser_accounts:main"' in pyproject
+    assert (ROOT / "src" / "speckit_powerpack" / "cli_browser_accounts.py").is_file()
+    assert (ROOT / "src" / "speckit_powerpack" / "desktop_browser_bridge.py").is_file()
 
 
 def test_deep_review_protocol_and_validator_are_packaged():
@@ -109,13 +111,15 @@ def test_implement_review_contract_starts_from_explicit_implement_then_converges
     assert "NEVER launch another `codex` CLI recursively" in text
 
 
-def test_implement_review_requires_account_scoped_consent_and_dual_approval():
+def test_implement_review_requires_explicit_browser_account_identity_and_dual_approval():
     text = (PRESET / "commands" / "speckit.implement-review.md").read_text(encoding="utf-8")
     assert "speckit-powerpack doctor --strict-review" in text
-    assert "windows-browser-context" in text
+    assert "desktop-browser-context" in text
     assert "isolated-playwright" in text
     assert "account_label" in text
-    assert "Project may be registered for multiple accounts" in text
+    assert "No automatic fallback" in text
+    assert "try another browser/account" in text
+    assert "same Project may have multiple account bindings" in text
     assert "mandatory ChatGPT Project Web review" in text
     assert "Both final approvals must refer to the same final snapshot" in text
     assert "Codex-only completion path" in text
