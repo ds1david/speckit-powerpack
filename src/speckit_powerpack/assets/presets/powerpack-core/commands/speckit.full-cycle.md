@@ -33,7 +33,7 @@ The initial `speckit-implement` is a mandatory explicit phase. `speckit-implemen
 - Never merge, approve, mark ready, force-push or destructively reset as part of this workflow.
 - `implement_review` requires the same-SPEC completed `implement` receipt.
 - Findings and convergence gaps discovered after the initial implementation stay inside the active `implement-review` loop.
-- `implement_review` must pass `speckit-powerpack doctor` readiness before material review work.
+- `implement_review` must pass `speckit-powerpack doctor --strict-review` before material review work.
 - `DONE` requires Sol/xhigh and mandatory ChatGPT Project Web approval of the same final snapshot.
 
 ## Terminal UX and routing
@@ -101,13 +101,22 @@ After `analyze` is clean, the state machine MUST enter `implement`. Run `speckit
 
 ## Integrated implementation-review
 
-Before review work, `speckit-implement-review` must prove PowerPack readiness:
+Before review work, `speckit-implement-review` must prove strict PowerPack readiness:
 
 ```bash
-speckit-powerpack doctor
+speckit-powerpack doctor --strict-review
 ```
 
-Missing `playwright-consent`, browser readiness, exact Project binding or selected executor is a blocker, not an optional degradation to Codex-only completion.
+Missing account consent, supported browser backend, live Windows browser session when required, exact Project binding or selected executor is a blocker, not an optional degradation to Codex-only completion.
+
+The ChatGPT Web backend may be either:
+
+```text
+isolated-playwright
+windows-browser-context
+```
+
+The active backend/profile/account stored in `.specify/powerpack/review.json` is authoritative for the Web gate. Never silently switch accounts or browser backends to make the cycle complete.
 
 The active `implement_review` phase internally owns:
 
@@ -161,4 +170,4 @@ Abort removes only ephemeral cycle state; SPEC artifacts, implementation changes
 
 ## Completion
 
-`DONE` means the same SPEC passed the explicit implementation predecessor, integrated convergence, quality gates, independent Sol/xhigh review and mandatory ChatGPT Project Web review on the same final snapshot. It does NOT mean a GitHub PR is approved, ready or merged.
+`DONE` means the same SPEC passed the explicit implementation predecessor, integrated convergence, quality gates, independent Sol/xhigh review and mandatory ChatGPT Project Web review on the same final snapshot under the configured reviewer account/browser backend. It does NOT mean a GitHub PR is approved, ready or merged.
