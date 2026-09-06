@@ -36,3 +36,4 @@ speckit_powerpack = ["assets/**/*.json", "assets/**/*.yml", "assets/**/*.md", "a
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["src"]
