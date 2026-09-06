@@ -12,14 +12,16 @@ from . import cli_web_review as previous
 from . import repository_context as repoctx
 from . import browser_extension_transport
 from . import windows_argv_transport
+from . import extension_background_attach
 
 
-# Apply host-browser semantics after all CLI layers are imported. Extension
-# mode is preferred for Edge/Chrome existing sessions; then replace the WSL ->
-# Windows process bridge with argv-safe PowerShell transport so eval/run-code
-# expressions are never re-parsed by cmd.exe.
+# Apply host-browser semantics after all CLI layers are imported. Edge/Chrome
+# use the existing authenticated browser through the official Playwright
+# Extension; WSL -> Windows argv is shell-safe; and the long-lived extension
+# attach is considered ready only when the named session answers a probe.
 browser_extension_transport.apply()
 windows_argv_transport.apply()
+extension_background_attach.apply()
 
 # All command layers share this module object. Replacing the legacy worktree
 # reader here moves subsequent reads/writes to the user-scoped repository state
