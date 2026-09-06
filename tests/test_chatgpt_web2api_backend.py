@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import json
 from pathlib import Path
 import sys
 
@@ -83,3 +85,45 @@ def test_non_loopback_request_uses_normal_http_transport(monkeypatch):
     value = backend.request_json("http://10.0.0.5:8080", "GET", "/health")
     assert value == {"ok": True}
     assert calls[0][1] == "http://10.0.0.5:8080/health"
+
+
+def test_windows_service_installs_pinned_github_archive_without_pypi(monkeypatch):
+    monkeypatch.setattr(backend.winbridge, "is_wsl", lambda: True)
+    monkeypatch.setattr(
+        backend,
+        "_decode_windows",
+        lambda value: value.decode("utf-8") if isinstance(value, bytes) else str(value or ""),
+    )
+    captured = {}
+
+    class Proc:
+        returncode = 0
+        stderr = b""
+        stdout = json.dumps(
+            {
+                "pid": 1234,
+                "endpoint": "http://127.0.0.1:8080",
+                "profile_dir": "C:/reviewer",
+                "stdout": "C:/reviewer/out.log",
+                "stderr": "C:/reviewer/err.log",
+                "python": "python.exe",
+                "upstream_revision": backend.WEB2API_REVISION,
+            }
+        ).encode("utf-8")
+
+    def fake_run(argv, **kwargs):
+        captured["argv"] = argv
+        captured["kwargs"] = kwargs
+        encoded = argv[argv.index("-EncodedCommand") + 1]
+        captured["script"] = base64.b64decode(encoded).decode("utf-16-le")
+        return Proc()
+
+    monkeypatch.setattr(backend.subprocess, "run", fake_run)
+    result = backend.start_windows_service(profile="ds1david", port=8080, cdp_port=9222)
+
+    script = captured["script"]
+    assert backend.WEB2API_INSTALL_URL in script
+    assert backend.WEB2API_REVISION in script
+    assert "pip install --disable-pip-version-check --user --upgrade $source" in script
+    assert "pip install --user --upgrade chatgpt-web2api" not in script
+    assert result["upstream_revision"] == backend.WEB2API_REVISION
