@@ -465,7 +465,12 @@ def validate_review(
                     f"but materially reappeared as {current.get('id')}"
                 )
     elif previous_findings:
-        errors.append("coverage.previous_findings must be empty on the first review round")
+        try:
+            round_no = int(review.get("round", 1) or 1)
+        except (TypeError, ValueError):
+            round_no = 1
+        if round_no <= 1:
+            errors.append("coverage.previous_findings must be empty on the first review round")
 
     front_statuses = {item.get("status") for item in fronts if isinstance(item, dict)}
     if verdict == "APPROVED":
