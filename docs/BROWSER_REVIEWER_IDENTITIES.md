@@ -1,126 +1,93 @@
-# Browser Reviewer Identities
+# Reviewer Identities
 
-PowerPack treats the browser carrying the ChatGPT session as part of the Web-review identity.
+PowerPack treats one dedicated ChatGPT-Web2API service and its persistent Chrome profile as one Web-review account identity.
 
 ## Core rule
 
 ```text
 logical PowerPack profile
-  + ChatGPT account
-  + selected desktop browser/session
+  + ChatGPT account authenticated in dedicated Chrome profile
+  + reviewer REST endpoint
   + ChatGPT Project binding
   = one Web reviewer identity
 ```
 
-There is **no automatic fallback** between browsers/accounts/backends.
+There is **no automatic fallback** between accounts, endpoints or Projects.
 
-An interactive setup may offer `try another browser/account`, but only after an explicit user decision. A failed attempt stores no grant. The new browser is authenticated and validated from the beginning.
+## Multiple Plus accounts
 
-## Multiple accounts
-
-A user can intentionally keep different ChatGPT accounts in different browsers:
+Use one service/profile/port pair per account:
 
 ```text
-ds1david-edge
+ds1david
   account_label = ds1david-plus
-  browser       = Edge
+  endpoint      = http://127.0.0.1:8080
+  Chrome profile = PowerPack/ds1david
 
-webflow-chrome
+webflow
   account_label = webflow-plus
-  browser       = Chrome
+  endpoint      = http://127.0.0.1:8081
+  Chrome profile = PowerPack/webflow
 ```
 
-Both profiles may be bound to the same shared ChatGPT Project. The repository selects exactly one reviewer identity at a time.
+Both may be bound to the same shared ChatGPT Project. The repository selects exactly one reviewer profile at a time.
 
 Example:
 
 ```bash
+speckit-powerpack review service start --profile ds1david --port 8080 --cdp-port 9222
 speckit-powerpack review auth configure
+
+speckit-powerpack review service start --profile webflow --port 8081 --cdp-port 9223
 speckit-powerpack review auth configure
 
 speckit-powerpack review auth list
-
-speckit-powerpack review project select --profile ds1david-edge --alias atsel --path .
-speckit-powerpack review project select --profile webflow-chrome --alias atsel --path .
+speckit-powerpack review project select --profile ds1david --alias atsel --path .
+speckit-powerpack review project select --profile webflow --alias atsel --path .
 ```
 
-Select the account/browser that will perform Web review:
+Switch explicitly:
 
 ```bash
-speckit-powerpack review project use atsel --profile ds1david-edge --path .
+speckit-powerpack review project use atsel --profile ds1david --path .
+# or
+speckit-powerpack review project use atsel --profile webflow --path .
 ```
 
-or:
+Validate:
 
 ```bash
-speckit-powerpack review project use atsel --profile webflow-chrome --path .
-```
-
-Validate the active repository binding:
-
-```bash
-jq '.chatgpt_web | {
-  profile,
-  account_label,
-  account_backend,
-  host_scope,
-  automation_browser_id,
-  project_alias,
-  project_url,
-  authorization
-}' .specify/powerpack/review.json
-
+speckit-powerpack review binding show --path . --json
 speckit-powerpack doctor --strict-review
 ```
 
-## Environment detection
+## WSL and native desktops
 
-PowerPack detects the runtime/browser host:
+When PowerPack runs in WSL, `review service start` starts ChatGPT-Web2API on the Windows host so the service, CDP endpoint and dedicated Chrome all share the same OS/loopback namespace. PowerPack invokes the reviewer REST endpoint through Windows loopback; it does not need a WSL port proxy.
 
-- WSL -> Windows browser host;
-- native Linux -> Linux desktop (GNOME/KDE/etc.) and Wayland/X11 when available;
-- macOS -> native macOS browser host.
+On native Linux/macOS/Windows, the service is started in the local host environment.
 
-The interactive setup lists detected browsers and marks their automation capability.
+## Authentication
 
-On Windows/WSL it also probes Windows App Paths so Edge/Chrome can be found even when their executables are not on `PATH`.
+The service launches a real headed Chrome with a dedicated persistent profile. Complete Google/SSO/MFA directly in that browser once. The browser may stay minimized during reviews.
 
-## Login and automation use the same browser
+PowerPack does not copy cookies, OAuth tokens, passwords or MFA material from personal Edge/Chrome/Firefox profiles. Reviewer state is separate from the Git worktree.
 
-For a reviewer profile, the selected browser is opened first **without Playwright control** so normal Google/SSO/MFA can complete.
+## Explicit account change
 
-After login:
-
-1. the user explicitly grants remote-debugging/automation permission;
-2. Playwright attaches to that same browser instance/session;
-3. PowerPack validates the authenticated ChatGPT UI;
-4. the user confirms the account label;
-5. only then is the authorization persisted.
-
-PowerPack does not export cookies, OAuth tokens, passwords, MFA material or browser-profile data.
-
-## Explicit browser/account retry
-
-If login or attach fails:
+If a reviewer endpoint/account fails:
 
 ```text
 failure
-  -> no grant stored
-  -> [T] try another browser/account OR [C] cancel
+  -> current Web gate blocks
+  -> no automatic endpoint/account switch
+  -> user explicitly reconfigures/rebinds another reviewer if desired
 ```
 
-Choosing `T` is an explicit reviewer-identity change, not fallback. Nothing switches silently.
-
-## Firefox
-
-Firefox may be detected because it can be a real user login browser. However, an already-running branded Firefox session does not have the same attach path used by Chromium/CDP.
-
-Therefore PowerPack must not mark an existing Firefox session as automated-review capable unless a real supported existing-session backend is implemented and validated.
-
-Today Firefox is shown as `manual-only`; it does not satisfy the mandatory automated ChatGPT Web gate.
+This is an identity change, not fallback.
 
 ## Review-time rule
 
-Once `speckit-implement-review` starts, the configured reviewer identity is immutable for that run unless the run blocks for configuration and the user explicitly reconfigures/rebinds it.
+Once `speckit-implement-review` starts, the configured reviewer identity is immutable for that run unless it blocks for configuration and the user explicitly reconfigures/rebinds it.
 
-A review failure never causes PowerPack to silently use another browser/account or downgrade to Codex-only completion.
+A review failure never causes PowerPack to silently use another account/endpoint or downgrade to Codex-only completion.
