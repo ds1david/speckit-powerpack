@@ -87,7 +87,7 @@ def test_non_loopback_request_uses_normal_http_transport(monkeypatch):
     assert calls[0][1] == "http://10.0.0.5:8080/health"
 
 
-def test_windows_service_installs_pinned_github_archive_without_pypi(monkeypatch):
+def test_windows_service_installs_pinned_github_archive_in_dedicated_venv(monkeypatch):
     monkeypatch.setattr(backend.winbridge, "is_wsl", lambda: True)
     monkeypatch.setattr(
         backend,
@@ -103,10 +103,11 @@ def test_windows_service_installs_pinned_github_archive_without_pypi(monkeypatch
             {
                 "pid": 1234,
                 "endpoint": "http://127.0.0.1:8080",
-                "profile_dir": "C:/reviewer",
+                "profile_dir": "C:/reviewer/chrome-profile",
+                "venv": "C:/reviewer/venv",
                 "stdout": "C:/reviewer/out.log",
                 "stderr": "C:/reviewer/err.log",
-                "python": "python.exe",
+                "python": "C:/reviewer/venv/Scripts/python.exe",
                 "upstream_revision": backend.WEB2API_REVISION,
             }
         ).encode("utf-8")
@@ -124,6 +125,11 @@ def test_windows_service_installs_pinned_github_archive_without_pypi(monkeypatch
     script = captured["script"]
     assert backend.WEB2API_INSTALL_URL in script
     assert backend.WEB2API_REVISION in script
-    assert "pip install --disable-pip-version-check --user --upgrade $source" in script
+    assert "-m venv $venv" in script
+    assert "Join-Path $venv 'Scripts\\python.exe'" in script
+    assert "pip install --disable-pip-version-check --no-warn-script-location --upgrade $source" in script
+    assert "--user --upgrade" not in script
+    assert "$ErrorActionPreference = 'Continue'" in script
     assert "pip install --user --upgrade chatgpt-web2api" not in script
+    assert result["venv"] == "C:/reviewer/venv"
     assert result["upstream_revision"] == backend.WEB2API_REVISION
