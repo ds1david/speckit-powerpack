@@ -31,13 +31,19 @@ def start_windows_service(
     cdp_port: int,
     install: bool = True,
 ) -> dict[str, Any]:
-    """Start ChatGPT-Web2API detached from the WSL/PowerShell console lifetime.
+    """Start a reviewer with browser/service lifecycles separated on Windows.
 
-    First-time ChatGPT login can take several minutes. A normal Start-Process
-    child can still share enough console/job lifetime with powershell.exe that
-    terminating the WSL wrapper closes the service and its owned Chrome. This
-    launcher uses Windows DETACHED_PROCESS + CREATE_NEW_PROCESS_GROUP from a
-    tiny Python bootstrap and records the PID for idempotent reuse.
+    First-login is intentionally two-process:
+
+    1. PowerPack launches the dedicated Chrome itself as a detached process and
+       waits only for the CDP port. The browser therefore survives a Web2API
+       crash, login timeout, WSL shell exit, or service restart.
+    2. Web2API starts only after CDP is live. Upstream then *attaches* to that
+       Chrome instead of owning its lifecycle, so aborting/restarting the REST
+       bridge cannot close the browser while Google/SSO/MFA is in progress.
+
+    A stale service process whose REST endpoint never came up is replaced before
+    the new bridge starts. Chrome is reused whenever its CDP endpoint is alive.
     """
     if not winbridge.is_wsl():
         raise Web2APIError("Detached Windows reviewer bootstrap is only valid under WSL.")
@@ -80,6 +86,37 @@ print(proc.pid)
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 $OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+
+function Test-HttpOk([string]$url, [int]$timeoutSec = 2) {{
+  try {{
+    $response = Invoke-WebRequest -UseBasicParsing -Uri $url -Method Get -TimeoutSec $timeoutSec
+    return ([int]$response.StatusCode -ge 200 -and [int]$response.StatusCode -lt 500)
+  }} catch {{
+    return $false
+  }}
+}}
+
+function Wait-HttpOk([string]$url, [int]$seconds) {{
+  $deadline = [DateTime]::UtcNow.AddSeconds($seconds)
+  while ([DateTime]::UtcNow -lt $deadline) {{
+    if (Test-HttpOk $url 2) {{ return $true }}
+    Start-Sleep -Milliseconds 500
+  }}
+  return (Test-HttpOk $url 2)
+}}
+
+function Start-DetachedFromSpec([string]$pythonExe, [string]$launcherPath, [string]$specPath) {{
+  $childText = (& $pythonExe $launcherPath $specPath | Out-String).Trim()
+  $childPid = 0
+  if (-not [int]::TryParse($childText, [ref]$childPid)) {{
+    throw "Detached launcher did not return a PID: $childText"
+  }}
+  Start-Sleep -Milliseconds 700
+  $child = Get-Process -Id $childPid -ErrorAction SilentlyContinue
+  if (-not $child) {{ throw "Detached process $childPid exited during startup." }}
+  return $childPid
+}}
+
 $python = $null
 foreach ($name in @('py.exe','python.exe','python')) {{
   $candidate = Get-Command $name -ErrorAction SilentlyContinue
@@ -101,9 +138,11 @@ $root = Join-Path $env:LOCALAPPDATA 'SpecKitPowerPack\\reviewers\\{_ps_quote(saf
 $venv = Join-Path $root 'venv'
 $chromeProfile = Join-Path $root 'chrome-profile'
 $logs = Join-Path $root 'logs'
-$pidFile = Join-Path $root 'service.pid'
+$servicePidFile = Join-Path $root 'service.pid'
+$browserPidFile = Join-Path $root 'browser.pid'
 $launcherPath = Join-Path $root 'launch-detached.py'
-$specPath = Join-Path $root 'service-launch.json'
+$serviceSpecPath = Join-Path $root 'service-launch.json'
+$browserSpecPath = Join-Path $root 'browser-launch.json'
 New-Item -ItemType Directory -Force -Path $root,$chromeProfile,$logs | Out-Null
 $servicePython = Join-Path $venv 'Scripts\\python.exe'
 
@@ -141,43 +180,122 @@ if ($LASTEXITCODE -ne 0) {{
   exit 15
 }}
 
-$stdout = Join-Path $logs 'web2api.out.log'
-$stderr = Join-Path $logs 'web2api.err.log'
+$launcherBytes = [Convert]::FromBase64String('{launcher_b64}')
+[IO.File]::WriteAllBytes($launcherPath, $launcherBytes)
 
-if (Test-Path $pidFile) {{
-  $existingText = (Get-Content $pidFile -ErrorAction SilentlyContinue | Select-Object -First 1)
+$endpoint = 'http://127.0.0.1:{port}'
+$healthUrl = "$endpoint/health"
+$cdpUrl = 'http://127.0.0.1:{cdp_port}/json/version'
+$serviceOut = Join-Path $logs 'web2api.out.log'
+$serviceErr = Join-Path $logs 'web2api.err.log'
+$browserOut = Join-Path $logs 'chrome.out.log'
+$browserErr = Join-Path $logs 'chrome.err.log'
+
+# A healthy existing REST bridge wins: do not disturb either service or Chrome.
+if (Test-HttpOk $healthUrl 2) {{
+  $servicePid = 0
+  if (Test-Path $servicePidFile) {{ [int]::TryParse([string](Get-Content $servicePidFile -ErrorAction SilentlyContinue | Select-Object -First 1), [ref]$servicePid) | Out-Null }}
+  $browserPid = 0
+  if (Test-Path $browserPidFile) {{ [int]::TryParse([string](Get-Content $browserPidFile -ErrorAction SilentlyContinue | Select-Object -First 1), [ref]$browserPid) | Out-Null }}
+  @{{ pid=$servicePid; browser_pid=$browserPid; endpoint=$endpoint; profile_dir=$chromeProfile; venv=$venv; stdout=$serviceOut; stderr=$serviceErr; browser_stdout=$browserOut; browser_stderr=$browserErr; python=$servicePython; upstream_revision='{WEB2API_REVISION}'; reused=$true; detached=$true; browser_detached=$true }} | ConvertTo-Json -Compress
+  exit 0
+}}
+
+# If a previous bridge is alive but never exposed REST, replace it. Its driver
+# may still point at the Chrome target that disappeared during an earlier login.
+if (Test-Path $servicePidFile) {{
+  $existingText = (Get-Content $servicePidFile -ErrorAction SilentlyContinue | Select-Object -First 1)
   $existingPid = 0
   if ([int]::TryParse([string]$existingText, [ref]$existingPid)) {{
     $existing = Get-Process -Id $existingPid -ErrorAction SilentlyContinue
     if ($existing) {{
-      @{{ pid=$existingPid; endpoint='http://127.0.0.1:{port}'; profile_dir=$chromeProfile; venv=$venv; stdout=$stdout; stderr=$stderr; python=$servicePython; upstream_revision='{WEB2API_REVISION}'; reused=$true; detached=$true }} | ConvertTo-Json -Compress
-      exit 0
+      Stop-Process -Id $existingPid -Force -ErrorAction SilentlyContinue
+      Start-Sleep -Milliseconds 700
     }}
   }}
-  Remove-Item $pidFile -Force -ErrorAction SilentlyContinue
+  Remove-Item $servicePidFile -Force -ErrorAction SilentlyContinue
 }}
 
-$launcherBytes = [Convert]::FromBase64String('{launcher_b64}')
-[IO.File]::WriteAllBytes($launcherPath, $launcherBytes)
-$argv = @($servicePython,'-m','chatgpt_web2api','start','--host','127.0.0.1','--port','{port}','--cdp-port','{cdp_port}','--user-data-dir',$chromeProfile)
-@{{ argv=$argv; stdout=$stdout; stderr=$stderr; cwd=$root }} | ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 $specPath
-
-$childText = (& $pythonExe $launcherPath $specPath | Out-String).Trim()
-$childPid = 0
-if (-not [int]::TryParse($childText, [ref]$childPid)) {{
-  [Console]::Error.WriteLine("Detached reviewer launcher did not return a PID: $childText")
+# Resolve Chrome explicitly. We launch it ourselves so Web2API attaches as a
+# non-owner and cannot close the browser when its own process exits/restarts.
+$chromeExe = $null
+$chromeCandidates = @()
+if ($env:ProgramFiles) {{ $chromeCandidates += (Join-Path $env:ProgramFiles 'Google\\Chrome\\Application\\chrome.exe') }}
+if ($env:'ProgramFiles(x86)') {{ $chromeCandidates += (Join-Path $env:'ProgramFiles(x86)' 'Google\\Chrome\\Application\\chrome.exe') }}
+if ($env:LOCALAPPDATA) {{ $chromeCandidates += (Join-Path $env:LOCALAPPDATA 'Google\\Chrome\\Application\\chrome.exe') }}
+foreach ($candidate in $chromeCandidates) {{ if (Test-Path $candidate) {{ $chromeExe = $candidate; break }} }}
+if (-not $chromeExe) {{
+  $chromeCommand = Get-Command chrome.exe -ErrorAction SilentlyContinue
+  if ($chromeCommand) {{ $chromeExe = if ($chromeCommand.Source) {{ [string]$chromeCommand.Source }} else {{ [string]$chromeCommand.Name }} }}
+}}
+if (-not $chromeExe) {{
+  [Console]::Error.WriteLine('Google Chrome was not found on Windows. Install Chrome, then retry.')
   exit 16
 }}
-Start-Sleep -Milliseconds 1000
-$child = Get-Process -Id $childPid -ErrorAction SilentlyContinue
-if (-not $child) {{
-  $tail = ''
-  if (Test-Path $stderr) {{ $tail = (Get-Content $stderr -Tail 40 -ErrorAction SilentlyContinue | Out-String).Trim() }}
-  [Console]::Error.WriteLine("Detached reviewer process exited during startup.`n$tail")
-  exit 17
+
+$browserReused = Test-HttpOk $cdpUrl 2
+$browserPid = 0
+if (-not $browserReused) {{
+  if (Test-Path $browserPidFile) {{
+    $oldBrowserText = (Get-Content $browserPidFile -ErrorAction SilentlyContinue | Select-Object -First 1)
+    $oldBrowserPid = 0
+    if ([int]::TryParse([string]$oldBrowserText, [ref]$oldBrowserPid)) {{
+      $oldBrowser = Get-Process -Id $oldBrowserPid -ErrorAction SilentlyContinue
+      if ($oldBrowser) {{
+        # Give a just-starting dedicated Chrome a short chance to expose CDP.
+        if (-not (Wait-HttpOk $cdpUrl 5)) {{
+          Stop-Process -Id $oldBrowserPid -Force -ErrorAction SilentlyContinue
+          Start-Sleep -Milliseconds 700
+        }} else {{
+          $browserReused = $true
+          $browserPid = $oldBrowserPid
+        }}
+      }}
+    }}
+    if (-not $browserReused) {{ Remove-Item $browserPidFile -Force -ErrorAction SilentlyContinue }}
+  }}
 }}
-[IO.File]::WriteAllText($pidFile, [string]$childPid)
-@{{ pid=$childPid; endpoint='http://127.0.0.1:{port}'; profile_dir=$chromeProfile; venv=$venv; stdout=$stdout; stderr=$stderr; python=$servicePython; upstream_revision='{WEB2API_REVISION}'; reused=$false; detached=$true }} | ConvertTo-Json -Compress
+
+if (-not $browserReused) {{
+  $browserArgv = @(
+    $chromeExe,
+    '--remote-debugging-port={cdp_port}',
+    "--user-data-dir=$chromeProfile",
+    '--no-first-run',
+    '--no-default-browser-check',
+    'https://chatgpt.com/'
+  )
+  @{{ argv=$browserArgv; stdout=$browserOut; stderr=$browserErr; cwd=$root }} | ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 $browserSpecPath
+  try {{
+    $browserPid = Start-DetachedFromSpec $pythonExe $launcherPath $browserSpecPath
+  }} catch {{
+    [Console]::Error.WriteLine("Could not start detached reviewer Chrome: $($_.Exception.Message)")
+    exit 17
+  }}
+  [IO.File]::WriteAllText($browserPidFile, [string]$browserPid)
+  if (-not (Wait-HttpOk $cdpUrl 20)) {{
+    [Console]::Error.WriteLine("Dedicated Chrome started as PID $browserPid but CDP did not become reachable at $cdpUrl. See $browserErr")
+    exit 18
+  }}
+}} elseif ($browserPid -eq 0 -and (Test-Path $browserPidFile)) {{
+  [int]::TryParse([string](Get-Content $browserPidFile -ErrorAction SilentlyContinue | Select-Object -First 1), [ref]$browserPid) | Out-Null
+}}
+
+# CDP is live before Web2API starts. Upstream ChromeProcess therefore attaches
+# to the already-running browser and does not own/kill it.
+$serviceArgv = @($servicePython,'-m','chatgpt_web2api','start','--host','127.0.0.1','--port','{port}','--cdp-port','{cdp_port}','--user-data-dir',$chromeProfile)
+@{{ argv=$serviceArgv; stdout=$serviceOut; stderr=$serviceErr; cwd=$root }} | ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 $serviceSpecPath
+try {{
+  $servicePid = Start-DetachedFromSpec $pythonExe $launcherPath $serviceSpecPath
+}} catch {{
+  $tail = ''
+  if (Test-Path $serviceErr) {{ $tail = (Get-Content $serviceErr -Tail 40 -ErrorAction SilentlyContinue | Out-String).Trim() }}
+  [Console]::Error.WriteLine("Could not start detached reviewer service: $($_.Exception.Message)`n$tail")
+  exit 19
+}}
+[IO.File]::WriteAllText($servicePidFile, [string]$servicePid)
+
+@{{ pid=$servicePid; browser_pid=$browserPid; endpoint=$endpoint; profile_dir=$chromeProfile; venv=$venv; stdout=$serviceOut; stderr=$serviceErr; browser_stdout=$browserOut; browser_stderr=$browserErr; python=$servicePython; upstream_revision='{WEB2API_REVISION}'; reused=$false; detached=$true; browser_detached=$true; browser_reused=$browserReused }} | ConvertTo-Json -Compress
 """
 
     encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
@@ -203,25 +321,25 @@ if (-not $child) {{
         raise Web2APIError(f"Could not parse detached reviewer bootstrap response: {stdout[-500:]}") from exc
 
 
-def wait_for_service(endpoint: str, *, timeout: int = 45) -> dict[str, Any]:
-    """Wait briefly for REST readiness without killing a legitimate login flow.
+def wait_for_service(endpoint: str, *, timeout: int = 10) -> dict[str, Any]:
+    """Wait briefly for REST readiness without owning the login duration.
 
-    ChatGPT-Web2API starts the REST listener only after the browser session is
-    authenticated. On first setup the user may legitimately need several
-    minutes for Google/SSO/MFA. Timeout therefore means WAITING_FOR_LOGIN, not
-    service failure; explicit `review service status` remains the live gate.
+    The dedicated Chrome is now independent of the REST bridge. If the account
+    still needs Google/SSO/MFA, the CLI returns WAITING_FOR_LOGIN quickly and
+    leaves the browser open indefinitely for the user to finish. `service
+    status` is the explicit live gate after login.
     """
     deadline = time.monotonic() + max(1, timeout)
     last: Exception | None = None
     while time.monotonic() < deadline:
         try:
-            return health(endpoint, timeout=min(5, max(1, timeout)))
+            return health(endpoint, timeout=min(3, max(1, timeout)))
         except Exception as exc:  # noqa: BLE001 - preserve diagnostic only
             last = exc
-            time.sleep(1)
+            time.sleep(0.5)
     return {
         "status": "waiting-login",
-        "chrome_running": None,
-        "cdp_connected": None,
+        "chrome_running": True,
+        "cdp_connected": True,
         "detail": str(last) if last else "REST endpoint is not ready yet",
     }
