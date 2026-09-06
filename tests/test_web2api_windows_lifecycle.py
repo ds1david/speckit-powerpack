@@ -10,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).parents[1] / "src"))
 from speckit_powerpack import web2api_windows_lifecycle as lifecycle
 
 
-def test_windows_reviewer_uses_detached_process_and_pid_reuse(monkeypatch):
+def test_windows_reviewer_separates_browser_and_service_lifecycles(monkeypatch):
     monkeypatch.setattr(lifecycle.winbridge, "is_wsl", lambda: True)
     monkeypatch.setattr(
         lifecycle,
@@ -24,16 +24,21 @@ def test_windows_reviewer_uses_detached_process_and_pid_reuse(monkeypatch):
         stderr = b""
         stdout = json.dumps(
             {
-                "pid": 4321,
+                "phase": "waiting-remote-debugging",
+                "pid": 0,
+                "browser_pid": 4321,
                 "endpoint": "http://127.0.0.1:8080",
+                "cdp_endpoint": "http://127.0.0.1:9222",
                 "profile_dir": "C:/reviewer/chrome-profile",
                 "venv": "C:/reviewer/venv",
                 "stdout": "C:/reviewer/logs/web2api.out.log",
                 "stderr": "C:/reviewer/logs/web2api.err.log",
+                "browser_stdout": "C:/reviewer/logs/chrome.out.log",
+                "browser_stderr": "C:/reviewer/logs/chrome.err.log",
                 "python": "C:/reviewer/venv/Scripts/python.exe",
                 "upstream_revision": "test",
-                "reused": False,
                 "detached": True,
+                "browser_detached": True,
             }
         ).encode("utf-8")
 
@@ -47,22 +52,25 @@ def test_windows_reviewer_uses_detached_process_and_pid_reuse(monkeypatch):
     result = lifecycle.start_windows_service(profile="ds1david", port=8080, cdp_port=9222)
 
     script = captured["script"]
-    assert "launch-detached.py" in script
+    assert "browser.pid" in script
     assert "service.pid" in script
-    assert "Get-Process -Id $existingPid" in script
-    assert "DETACHED_PROCESS" not in script  # lives in the base64 launcher payload
+    assert "chrome://inspect/#remote-debugging" in script
+    assert "waiting-remote-debugging" in script
+    assert "CDP is now live. Web2API sees an existing Chrome" in script
+    assert script.index("waiting-remote-debugging") < script.index("$serviceArgv =")
     launcher_b64 = script.split("FromBase64String('", 1)[1].split("')", 1)[0]
     launcher = base64.b64decode(launcher_b64).decode("utf-8")
     assert "DETACHED_PROCESS" in launcher
     assert "CREATE_NEW_PROCESS_GROUP" in launcher
-    assert result["detached"] is True
-    assert result["pid"] == 4321
+    assert result["phase"] == "waiting-remote-debugging"
+    assert result["browser_detached"] is True
+    assert result["browser_pid"] == 4321
 
 
-def test_wait_for_service_timeout_is_waiting_login_not_failure(monkeypatch):
+def test_wait_for_service_timeout_keeps_independent_browser_alive(monkeypatch):
     ticks = iter([0.0, 2.0])
     monkeypatch.setattr(lifecycle.time, "monotonic", lambda: next(ticks))
     state = lifecycle.wait_for_service("http://127.0.0.1:8080", timeout=1)
     assert state["status"] == "waiting-login"
-    assert state["chrome_running"] is None
-    assert state["cdp_connected"] is None
+    assert state["chrome_running"] is True
+    assert state["cdp_connected"] is True
