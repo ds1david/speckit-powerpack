@@ -27,7 +27,7 @@ def test_smoke_script_opens_exact_project_and_waits_for_assistant_response():
     assert "#prompt-textarea" in script
     assert 'data-message-author-role=\\"assistant\\"' in script or 'data-message-author-role="assistant"' in script
     assert "page.keyboard.press('Enter')" in script
-    assert "POWERPACK_REVIEW_JSON:" in script
+    assert "project_url_requested" in script
     assert "arithmetic_check" in script
     assert "max_words_check" in script
 
@@ -42,7 +42,7 @@ def test_parse_smoke_result_from_raw_playwright_output():
         "arithmetic_check": True,
         "max_words_check": True,
     }
-    result = _parse_result("POWERPACK_REVIEW_JSON:" + json.dumps(payload), "")
+    result = _parse_result(json.dumps(payload), "")
     assert result.response.endswith("1 + 1 = 2.")
     assert result.arithmetic_check is True
     assert result.max_words_check is True
