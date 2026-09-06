@@ -23,6 +23,7 @@ Issues = "https://github.com/ds1david/speckit-powerpack/issues"
 
 [project.scripts]
 speckit-powerpack = "speckit_powerpack.cli_account_binding:main"
+speckit-powerpack-web-review = "speckit_powerpack.web_review_runner:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
