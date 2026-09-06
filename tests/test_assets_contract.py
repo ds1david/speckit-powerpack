@@ -61,12 +61,14 @@ def test_review_defaults_require_platform_scoped_web_accounts_and_projects():
     assert review["deep_review"]["adversarial_verdict_challenge"] is True
 
 
-def test_playwright_is_core_dependency_and_browser_account_cli_is_entrypoint():
+def test_playwright_is_core_dependency_and_web_review_cli_is_entrypoint():
     pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
     assert 'dependencies = ["playwright>=1.55,<2"]' in pyproject
-    assert 'speckit-powerpack = "speckit_powerpack.cli_browser_accounts:main"' in pyproject
+    assert 'speckit-powerpack = "speckit_powerpack.cli_web_review:main"' in pyproject
     assert (ROOT / "src" / "speckit_powerpack" / "cli_browser_accounts.py").is_file()
+    assert (ROOT / "src" / "speckit_powerpack" / "cli_web_review.py").is_file()
     assert (ROOT / "src" / "speckit_powerpack" / "desktop_browser_bridge.py").is_file()
+    assert (ROOT / "src" / "speckit_powerpack" / "web_review_smoke.py").is_file()
 
 
 def test_deep_review_protocol_and_validator_are_packaged():
