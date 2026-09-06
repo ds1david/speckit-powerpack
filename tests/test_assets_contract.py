@@ -44,16 +44,19 @@ def test_update_command_and_policy_are_packaged():
     assert update["force"]["destructive_git_operations"] is False
 
 
-def test_review_defaults_require_platform_scoped_web_accounts_and_projects():
+def test_review_defaults_require_user_scoped_web2api_accounts_and_projects():
     review = json.loads((ASSETS / "config" / "default-review.json").read_text(encoding="utf-8"))
-    assert review["schema_version"] == 3
+    assert review["schema_version"] == 4
     web = review["chatgpt_web"]
     assert web["required"] is True
     assert web["enabled"] is True
+    assert web["backend"] == "chatgpt-web2api"
     assert web["profile_scope"] == "platform"
     assert web["headless"] is False
     assert web["authorization"] is None
     assert web["account_label"] is None
+    assert web["endpoint"] is None
+    assert web["project_id"] is None
     assert web["project_name"] is None
     assert review["deep_review"]["schema_version"] == "2.0"
     assert review["deep_review"]["validate_previous_findings"] is True
@@ -61,10 +64,17 @@ def test_review_defaults_require_platform_scoped_web_accounts_and_projects():
     assert review["deep_review"]["adversarial_verdict_challenge"] is True
 
 
-def test_playwright_is_a_core_runtime_dependency_and_account_aware_cli_is_entrypoint():
+def test_user_state_cli_contains_web2api_backend_and_legacy_playwright_remains_packaged():
     pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
-    assert 'dependencies = ["playwright>=1.55,<2"]' in pyproject
-    assert 'speckit-powerpack = "speckit_powerpack.cli_account_binding:main"' in pyproject
+    assert 'speckit-powerpack = "speckit_powerpack.cli_user_state:main"' in pyproject
+    assert (ROOT / "src" / "speckit_powerpack" / "chatgpt_web2api_backend.py").is_file()
+    assert (ROOT / "src" / "speckit_powerpack" / "cli_web2api_review.py").is_file()
+    assert (ROOT / "src" / "speckit_powerpack" / "cli_user_state.py").is_file()
+    assert (ROOT / "src" / "speckit_powerpack" / "repository_context.py").is_file()
+    # Legacy browser modules remain readable for migration/compatibility, but
+    # they are no longer the functional Web-review path.
+    assert (ROOT / "src" / "speckit_powerpack" / "desktop_browser_bridge.py").is_file()
+    assert (ROOT / "src" / "speckit_powerpack" / "web_review_smoke.py").is_file()
 
 
 def test_deep_review_protocol_and_validator_are_packaged():
@@ -109,13 +119,17 @@ def test_implement_review_contract_starts_from_explicit_implement_then_converges
     assert "NEVER launch another `codex` CLI recursively" in text
 
 
-def test_implement_review_requires_account_scoped_playwright_consent_and_dual_approval():
+def test_implement_review_requires_explicit_web2api_account_project_and_dual_approval():
     text = (PRESET / "commands" / "speckit.implement-review.md").read_text(encoding="utf-8")
     assert "speckit-powerpack doctor --strict-review" in text
-    assert "playwright-account-consent" in text
+    assert "chatgpt-web2api" in text
     assert "account_label" in text
-    assert "Project may be registered for multiple accounts" in text
+    assert "project_id" in text
+    assert "reviewer endpoint" in text
+    assert "No automatic fallback" in text
+    assert "same ChatGPT Project may have multiple account bindings" in text
     assert "mandatory ChatGPT Project Web review" in text
+    assert "speckit-powerpack review run" in text
     assert "Both final approvals must refer to the same final snapshot" in text
     assert "Codex-only completion path" in text
 

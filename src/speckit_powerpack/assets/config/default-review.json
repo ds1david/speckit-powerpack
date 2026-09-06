@@ -1,5 +1,5 @@
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "mode": "interactive",
   "conversation_strategy": "one-per-pr",
   "deep_review": {
@@ -18,13 +18,16 @@
   "chatgpt_web": {
     "required": true,
     "enabled": true,
+    "backend": "chatgpt-web2api",
     "mode": "assisted",
     "project_alias": null,
+    "project_id": null,
     "project_name": null,
     "project_url": null,
     "headless": false,
     "profile": null,
     "account_label": null,
+    "endpoint": null,
     "profile_scope": "platform",
     "profile_platform": null,
     "authorization": null

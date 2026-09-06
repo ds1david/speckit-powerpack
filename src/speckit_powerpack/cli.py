@@ -168,14 +168,20 @@ def enforce_mandatory_web_review(review_path: Path) -> None:
         review = read_asset_json("config/default-review.json")
     if not isinstance(review, dict):
         raise PowerPackError("PowerPack review config must contain an object.")
+    review["schema_version"] = max(4, int(review.get("schema_version", 0) or 0))
     web = review.setdefault("chatgpt_web", {})
     web["required"] = True
     web["enabled"] = True
+    web["backend"] = "chatgpt-web2api"
     web.setdefault("mode", "assisted")
-    web.setdefault("headless", False)
+    web["headless"] = False
     web.setdefault("project_alias", None)
+    web.setdefault("project_id", None)
     web.setdefault("project_url", None)
+    web.setdefault("project_name", None)
     web.setdefault("profile", None)
+    web.setdefault("account_label", None)
+    web.setdefault("endpoint", None)
     web.setdefault("profile_scope", "platform")
     web.setdefault("profile_platform", None)
     web.setdefault("authorization", None)

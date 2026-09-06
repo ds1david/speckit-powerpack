@@ -26,55 +26,130 @@ speckit-analyze
 
 ## Invariant: agnostic execution
 
-This skill MUST NOT select behavior directly from operating system, programming language, framework, IDE or build tool.
-
-The workflow contract is always:
+Always use:
 
 ```text
 DISCOVER CAPABILITY -> SELECT STRATEGY -> EXECUTE CONTRACT
 ```
 
-Platform/build details are resolved only by `.specify/powerpack/bin/capabilities.py` and PowerPack configuration.
+Do not hard-code project language/build behavior. The effective reviewer endpoint/account/Project is resolved from PowerPack user-scoped configuration.
 
 ## Mandatory PowerPack/Web readiness
 
-Before convergence or review, run the strict readiness gate:
+Before convergence or review run:
 
 ```bash
 speckit-powerpack doctor --strict-review
 ```
 
-If it fails, STOP with `BLOCKED_CONFIGURATION`. A plain `speckit-powerpack doctor` is diagnostic and may report `SETUP` without treating an otherwise healthy installation as broken; `--strict-review` is the mandatory execution gate for this skill.
+If it fails, STOP with `BLOCKED_CONFIGURATION`.
 
-Do not begin review when the mandatory ChatGPT Project Web gate lacks any of:
-
-- Playwright/Chromium readiness;
-- an account-scoped `playwright-account-consent` grant;
-- persistent PowerPack browser profile for the current platform;
-- exact Project alias/URL/profile binding;
-- the configured `account_label`/profile identity that will perform the Web review;
-- selected executor availability.
-
-The Playwright profile represents the **ChatGPT account identity** performing Web code review. The Project is a separate context binding. A Project may be registered for multiple accounts, but the repository must select exactly one account/profile for the active review.
-
-Typical setup:
+Resolve the effective reviewer identity with:
 
 ```bash
-speckit-powerpack review auth authorize <profile> --account-label <account-label>
+speckit-powerpack review binding show --path . --json
+```
+
+Do not infer personal reviewer state from `.specify/powerpack/review.json`. That file contains only versionable policy. Account, endpoint and Project binding are stored under the user's PowerPack config root and keyed by normalized Git repository identity.
+
+The binding output must prove:
+
+- repository identity/provider;
+- exact Project alias/name/id/URL;
+- reviewer logical profile;
+- `account_label` identifying the ChatGPT account that performs Web review;
+- `backend = chatgpt-web2api`;
+- explicit localhost reviewer endpoint;
+- valid account/Project authorization.
+
+## Reviewer identity model
+
+These are separate concepts:
+
+```text
+PowerPack logical profile = local reviewer identity
+ChatGPT account           = account authenticated in that reviewer's dedicated Chrome profile
+reviewer endpoint         = one ChatGPT-Web2API REST service for that account
+Project binding           = ChatGPT Project id used for every Web review request
+repository identity       = normalized Git remote, or local path when no remote exists
+```
+
+A user may intentionally maintain multiple ChatGPT Plus accounts. Example:
+
+```text
+atsel
+├─ ds1david -> endpoint=http://127.0.0.1:8080 -> Plus account A
+└─ webflow  -> endpoint=http://127.0.0.1:8081 -> Plus account B
+```
+
+The same ChatGPT Project may have multiple account bindings. Switching reviewer profile is explicit.
+
+### No automatic fallback
+
+PowerPack MUST NOT silently change reviewer profile, endpoint, ChatGPT account, Project or authentication backend after a failure.
+
+If an endpoint/account fails during an active review, return `BLOCKED_CONFIGURATION`. Reconfiguration is an explicit user action outside the active review run.
+
+Never silently replace the mandatory Web gate with a Codex-only completion path.
+
+## Functional Web backend: `chatgpt-web2api`
+
+The supported functional backend is a dedicated `ChatGPT-Web2API` service controlling a real headed Chrome profile through CDP. PowerPack communicates with that service only through its local REST contract.
+
+PowerPack does **not** own or implement the browser automation protocol in this gate. It does not copy cookies, passwords, MFA data or OAuth tokens between personal browsers, WSL, repositories or reviewer profiles.
+
+The browser may remain minimized during review. Headless mode is not required and is not the default because ChatGPT Web anti-bot behavior can differ in headless browsers.
+
+Each reviewer account should use a dedicated service/profile. From WSL, PowerPack may start the service on the Windows host so Windows loopback and Chrome remain on the same OS.
+
+## Account/service setup
+
+Start one dedicated reviewer service:
+
+```bash
+speckit-powerpack review service start --profile <profile>
+```
+
+For multiple accounts, assign different REST/CDP ports explicitly, for example:
+
+```bash
+speckit-powerpack review service start --profile ds1david --port 8080 --cdp-port 9222
+speckit-powerpack review service start --profile webflow  --port 8081 --cdp-port 9223
+```
+
+Complete ChatGPT login in the Chrome window opened for that profile, then configure the reviewer identity:
+
+```bash
+speckit-powerpack review auth configure
+```
+
+Useful checks:
+
+```bash
+speckit-powerpack review service status --endpoint http://127.0.0.1:8080
+speckit-powerpack review auth list
+speckit-powerpack review auth validate
+speckit-powerpack review auth use <profile>
+```
+
+When an existing reviewer is selected, replacing it requires explicit confirmation. Reconfiguration invalidates previous Project bindings for that logical reviewer until the Project is re-verified.
+
+## Project binding
+
+After account authorization:
+
+```bash
+speckit-powerpack review project discover --profile <profile>
 speckit-powerpack review project select --profile <profile> --path .
 ```
 
-Known/shared Project URL:
+Known Project URL:
 
 ```bash
 speckit-powerpack review project add '<project-url>' --profile <profile> --alias <alias> --path .
 ```
 
-Invite/shared link:
-
-```bash
-speckit-powerpack review project accept-invite '<invite-or-shared-link>' --profile <profile> --alias <alias> --path .
-```
+`project add` extracts the `g-p-...` Project id and verifies that the selected reviewer endpoint can actually see that Project before persisting the binding.
 
 Switch an already registered Project/account pair:
 
@@ -82,7 +157,13 @@ Switch an already registered Project/account pair:
 speckit-powerpack review project use <alias> --profile <profile> --path .
 ```
 
-Never reuse the default Windows Edge/Chrome user-data directory; PowerPack profiles are intentionally isolated. Reauthorizing/reconfiguring an account profile invalidates its previous Project bindings until those Projects are re-verified.
+Validate the final mapping:
+
+```bash
+speckit-powerpack review binding show --path .
+```
+
+The binding is stored under the user configuration root, not in the Git worktree.
 
 ## Terminal UX and model routing
 
@@ -90,13 +171,11 @@ Before the first material action:
 
 1. run `python .specify/powerpack/bin/powerpack.py model route --stage implement-review`;
 2. read `.specify/powerpack/model-routing.json`;
-3. show a compact planned routing table with `Etapa | Modelo | Effort | Condição | Por que este modelo`;
-4. include the parent/orchestrator, convergence gate, bounded worker/advisor routes when applicable, Sol reviewer and mandatory Web gate as separate rows;
-5. mark conditional routes as conditional instead of pretending they already ran.
+3. show `Etapa | Modelo | Effort | Condição | Por que este modelo`;
+4. include parent/orchestrator, convergence, Sol reviewer and mandatory Web gate as separate rows;
+5. mark conditional routes as conditional.
 
-Narrate material subtask transitions compactly while leaving real Read/Search/Write/Update/Shell/diff rendering to the host. Never fabricate tool counts or diffs.
-
-At completion, repeat the same planned routing rows in the same order and add `Segmentos | Tempo observado | Resultado`. Use only timing actually observed by the host/orchestrator; if a route was not measured, use `N/D`, never an estimate. Human waiting time does not belong to any model.
+Never fabricate tool counts, diffs or timing. At completion repeat the planned rows and add observed result/timing fields; use `N/D` when timing was not measured.
 
 ## Mandatory predecessor
 
@@ -120,31 +199,29 @@ A completed `speckit-implement` receipt for the same SPEC is mandatory. A receip
 
 The first productive action after readiness and predecessor gates is `speckit-converge` for the same SPEC.
 
-Use the configured `max_convergence_rounds` from `.specify/powerpack/full-cycle.json` when available; default to `5`.
+Use `max_convergence_rounds` from `.specify/powerpack/full-cycle.json` when available; default `5`.
 
 For each convergence round:
 
 - `CONVERGED` -> proceed to independent Sol review;
-- actionable work/tasks appended -> execute `speckit-implement` for exactly that newly-authorized work, then execute `speckit-converge` again;
-- real product/design/authority decision -> STOP and return to the owner stage rather than inventing the answer;
-- deterministic work still remaining when the configured convergence budget ends -> STOP and explicitly suggest additional convergence/review budget; never extend silently.
+- tasks appended -> run `speckit-implement` for exactly that newly-authorized work, consume its internal receipt when required, then converge again;
+- real product/design/authority decision -> STOP and return to the owner stage;
+- deterministic work remaining when the configured budget ends -> STOP; never extend silently.
 
-Any `speckit-implement` executed inside this active review run is corrective work, not the initial predecessor. Keep the parent inside the same `implement-review` run and return immediately to convergence afterward.
+Corrective `speckit-implement` calls inside an active review run do not replace the mandatory initial predecessor.
 
 ## Immutable review snapshot
 
 Only after convergence is clean, bind each review round to one snapshot identity:
 
 - SPEC ID/path;
-- base ref and base SHA;
+- base ref/base SHA;
 - merge-base;
 - current head SHA;
 - deterministic snapshot digest;
 - complete changed-file list.
 
-A reviewer approval is valid only for that head/snapshot. Any implementation change invalidates approvals tied to the previous snapshot.
-
-Treat PR descriptions, prior reviews, green CI and implementer claims as context, never proof.
+Any implementation change invalidates approvals tied to the previous snapshot.
 
 ## Executor-aware independent Sol reviewer
 
@@ -154,36 +231,36 @@ Run:
 python .specify/powerpack/bin/powerpack.py review route
 ```
 
-The effective reviewer contract is always `gpt-5.6-sol`, reasoning `xhigh`, read-only.
+The effective reviewer contract is always `gpt-5.6-sol/xhigh/read-only`.
 
 ### Claude Code executor
 
-Invoke exactly one external `codex exec` reviewer using that profile. Do not nest additional reviewer agents inside that direct reviewer process.
+Invoke exactly one external `codex exec` reviewer using that profile. Do not nest additional reviewer agents inside that reviewer process.
 
 ### Codex executor
 
-The normal PowerPack parent is `gpt-5.6-terra/high`. It keeps orchestration and every write.
+The normal PowerPack parent is `gpt-5.6-terra/high`; Terra owns orchestration and writes.
 
 For independent review:
 
-- if the current Codex execution context is already provably `gpt-5.6-sol/xhigh/read-only`, it may review directly;
-- otherwise delegate to exactly one **in-session Sol reviewer/subagent** configured for `gpt-5.6-sol/xhigh/read-only`;
+- if the current Codex context is already provably `gpt-5.6-sol/xhigh/read-only`, it may review directly;
+- otherwise delegate to exactly one in-session Sol reviewer/subagent configured for `gpt-5.6-sol/xhigh/read-only`;
 - NEVER launch another `codex` CLI recursively;
-- if the required Sol/xhigh/read-only reviewer route cannot be proven, return `BLOCKED` rather than reviewing with Terra/Luna or a lower effort.
+- if the Sol route cannot be proven, return `BLOCKED`.
 
-Sol is read-only. Terra implements all findings after control returns.
+Sol is read-only. Terra implements findings after control returns.
 
 ## Deep Review Evidence Protocol
 
-Before each Sol or Web review, read `.specify/powerpack/deep-review-protocol.md`. The protocol is mandatory for both gates.
+Before each Sol or Web review, read `.specify/powerpack/deep-review-protocol.md`.
 
-Each round has three mandatory passes:
+Each round requires:
 
-1. **Previous findings** — on round 2+, validate every finding from the immediately previous review as `RESOLVED`, `PARTIALLY_RESOLVED`, `NOT_RESOLVED` or `REGRESSED` with evidence. No previous finding ID may disappear.
-2. **Full snapshot review** — discard the previous verdict and review the complete current snapshot against the merge-base, not only the latest correction delta.
-3. **Adversarial verdict challenge** — before returning a verdict, actively try to invalidate it with the strongest remaining counterexample in concurrency, replay/restart, partial failure, boundaries, constraints, side effects, shutdown, composition root, security and vacuously green tests.
+1. previous-finding validation on round 2+;
+2. full current-snapshot review against merge-base;
+3. adversarial verdict challenge.
 
-Required review fronts:
+Required fronts:
 
 - `SPEC_COMPLIANCE`
 - `BEHAVIORAL_REGRESSION`
@@ -194,64 +271,63 @@ Required review fronts:
 - `DOCUMENTATION_AND_OPERABILITY`
 - `SECURITY_AND_SCOPE`
 
-Every changed file must appear in both `coverage.changed_files` and `coverage.inspected_files`. When a SPEC is present, requirements coverage cannot be empty. Baseline scenarios cannot be empty.
-
-The reviewer emits schema `2.0` JSON. Validate it before ingesting findings:
+Reviewer output uses schema `2.0`. Validate it:
 
 ```bash
 python .specify/powerpack/bin/review_protocol.py validate --input <review.json>
 ```
 
-On round 2+ also pass `--previous <previous-review.json>`.
+On round 2+ add `--previous <previous-review.json>`.
 
-The validator classification is authoritative:
-
-- `VALID` -> proceed;
-- `BLOCKED_REVIEW_CONTRACT` -> stop; do not silently repair or reinterpret reviewer output;
-- `BLOCKED_REPEATED_FINDING` -> stop with previous/current evidence.
-
-`APPROVED` is accepted only when the validator proves `findings: []`, complete changed-file coverage, full requirement/baseline coverage, previous findings resolved and all review fronts passing or evidence-backed `NOT_APPLICABLE`.
+`APPROVED` requires no findings plus complete evidence/coverage required by the protocol.
 
 ## Start / resume review state
 
-Read `.specify/powerpack/review.json` and require:
+Resolve the effective binding:
+
+```bash
+speckit-powerpack review binding show --path . --json
+```
+
+Require:
 
 ```text
 chatgpt_web.required = true
 chatgpt_web.enabled = true
-chatgpt_web.authorization = playwright-account-consent
-chatgpt_web.project_url = configured exact Project URL
-chatgpt_web.project_alias = configured local Project alias
-chatgpt_web.profile = configured isolated account profile
-chatgpt_web.account_label = configured reviewer-account identity
+chatgpt_web.backend = chatgpt-web2api
+chatgpt_web.authorization = chatgpt-web2api-project-binding
+chatgpt_web.project_id = configured exact g-p-... id
+chatgpt_web.project_url = configured Project URL
+chatgpt_web.project_alias = configured Project alias
+chatgpt_web.profile = configured reviewer profile
+chatgpt_web.account_label = configured ChatGPT account identity
+chatgpt_web.endpoint = configured reviewer endpoint
 ```
 
-The combination `Project + profile/account` is part of the Web review identity. Do not silently substitute another authenticated account even when that account also has access to the same shared Project.
-
-Then start review state with the configured Project URL:
+Start state with the Project URL returned by the effective binding:
 
 ```bash
 python .specify/powerpack/bin/powerpack.py review start \
   --mode auto \
-  --project-url <configured-project-url>
+  --project-url <effective-project-url>
 ```
 
-Interactive mode is allowed when explicitly chosen. `extend N` resumes the same existing review state; it does not create a new initial implementation predecessor.
+`extend N` resumes the same review state; it does not create a new initial predecessor.
 
 Use `max_review_rounds` from `.specify/powerpack/full-cycle.json` when available; default `5`.
 
-If the review budget ends while the current snapshot still lacks valid approval from both gates:
+On budget exhaustion:
 
 ```text
 Stage Handoff: BLOCKED_BUDGET
 Suggested: speckit-implement-review extend 2
 ```
 
-Use `2` as the default small extension unless objective evidence supports another number. Never extend silently.
+Never extend silently.
 
-## Findings ledger and automatic repair loop
+## Findings ledger and repair loop
 
-Every valid reviewer response with findings must be ingested before implementation:
+Ingest every valid review with findings before implementation:
 
 ```bash
 python .specify/powerpack/bin/powerpack.py review ingest \
@@ -259,38 +335,25 @@ python .specify/powerpack/bin/powerpack.py review ingest \
   --findings-json <review.json>
 ```
 
-Every finding becomes durable work in the current SPEC's `tasks.md` under `## PowerPack Review Findings`. Stable `REV-*` identities deduplicate materially repeated findings without losing audit history.
+All findings are mandatory work regardless of severity. Do not defer findings to debt/backlog/TODO merely to converge.
 
-A finding is mandatory work regardless of severity. Never reject, reclassify, silence, defer or convert a finding into technical debt/backlog/TODO/future issue merely to converge.
-
-In automatic mode select every pending finding. In interactive mode select only the user-authorized batch. Never implement a finding that was not first persisted and selected.
-
-After implementing the selected batch:
+After implementation:
 
 ```bash
 python .specify/powerpack/bin/powerpack.py review mark-implemented \
   --evidence "implementation summary and affected paths"
 ```
 
-Then, **before another approval can be accepted**:
-
-1. run `speckit-converge` again;
-2. if convergence appends tasks, run `speckit-implement` for those tasks and converge again until clean;
-3. discover and run the capability-selected quality gate;
-4. resolve the implemented findings with concrete evidence;
-5. start a fresh full-snapshot Sol review;
-6. only after Sol is clean run the mandatory Web gate again.
-
-This sequence is mandatory:
+Then always:
 
 ```text
 review findings
   -> implement fixes
   -> converge
        -> tasks? implement -> converge ...
-  -> quality gate
-  -> Sol review
-  -> Web review
+  -> capability-selected quality gate
+  -> fresh Sol review
+  -> fresh Web review
 ```
 
 A previous approval is stale after any implementation change.
@@ -304,21 +367,46 @@ python .specify/powerpack/bin/capabilities.py gate detect
 python .specify/powerpack/bin/capabilities.py gate run
 ```
 
-Unknown/ambiguous architectures fail closed unless project configuration defines a deterministic custom gate. Documentation-only implementation deltas may be `NOT_APPLICABLE`.
+Unknown/ambiguous architectures fail closed unless project configuration defines a deterministic custom gate. Documentation-only deltas may be `NOT_APPLICABLE` when correctly justified.
 
 ## Mandatory ChatGPT Project Web gate
 
-Run Web review only after Sol has no findings for the current snapshot. The Web reviewer uses the same evidence protocol and schema `2.0`, but is an independent gate and does not inherit trust from Sol.
+Run Web review only after Sol has no findings for the current snapshot.
 
-Use only the exact `profile`, `account_label`, Project alias and Project URL from `.specify/powerpack/review.json`. The selected profile belongs to the current OS/WSL namespace and is separate from the user's normal Edge/Chrome context.
+Build a reviewer prompt file containing:
 
-The authenticated ChatGPT account behind that profile defines the Web reviewer identity. For example, if the same shared Project is registered for an owner profile and a collaborator profile, the binding selected with `review project use <alias> --profile <profile>` is authoritative for that review run.
+- immutable snapshot identity;
+- SPEC/relevant artifacts;
+- complete changed-file/diff evidence needed by the protocol;
+- previous Web findings on round 2+;
+- instruction to return schema `2.0` JSON only;
+- all mandatory deep-review fronts;
+- explicit adversarial verdict challenge.
+
+Send that prompt to the **bound Project id** through the configured reviewer endpoint:
+
+```bash
+speckit-powerpack review run \
+  --path . \
+  --prompt-file <web-review-prompt.txt> \
+  --output <web-review.json>
+```
+
+Do not call another endpoint/profile/Project if this request fails. Return `BLOCKED_CONFIGURATION`.
+
+Validate the returned review:
+
+```bash
+python .specify/powerpack/bin/review_protocol.py validate --input <web-review.json>
+```
+
+On round 2+ add `--previous <previous-web-review.json>`.
 
 If Web produces findings:
 
 ```text
 Web finding
-  -> persist finding in tasks.md
+  -> persist finding
   -> Terra/implementer fixes
   -> converge until clean
   -> quality gate
@@ -326,30 +414,26 @@ Web finding
   -> fresh Web review
 ```
 
-Both final approvals must refer to the same final snapshot. Missing/stale account authorization or Project binding is `BLOCKED_CONFIGURATION`, never an acceptable Codex-only completion path.
+Both final approvals must refer to the same final snapshot.
 
-## Usage/session limits
-
-When Claude Code or Codex reports a usage/session/rate limit, use the PowerPack limit checkpoint mechanism. Persist only safe resumable execution context; never passwords, cookies, MFA or raw authentication material.
-
-## Completion and Stage Handoff
+## Completion
 
 The review converges only when:
 
-1. the same SPEC has a completed explicit `speckit-implement` predecessor;
+1. same-SPEC explicit initial `speckit-implement` predecessor is proven;
 2. convergence is currently clean;
-3. all findings from all completed review gates are durable and `RESOLVED` with evidence;
-4. the capability-selected gate passed or was correctly `NOT_APPLICABLE`;
+3. all findings are `RESOLVED` with evidence;
+4. capability-selected quality gate passed or is correctly `NOT_APPLICABLE`;
 5. independent Sol/xhigh review approves the current snapshot;
-6. mandatory ChatGPT Project Web review, executed under the configured account/profile identity, approves that exact same final snapshot.
+6. mandatory ChatGPT Project Web review through the configured Web2API endpoint approves that exact same snapshot.
 
-Finish with a compact completion report, the observed routing table, and:
+Finish with:
 
 ```text
 Stage Handoff: COMPLETE
 Próxima etapa: nenhuma
 ```
 
-On missing predecessor use `RETURN -> speckit-implement`; on real earlier-stage problems return to their owner; on operational/reviewer inability use `BLOCKED`; on missing/stale Web account or Project binding use `BLOCKED_CONFIGURATION`; on exhausted review rounds use `BLOCKED_BUDGET`.
+Use `RETURN -> speckit-implement` for missing predecessor, owner-stage return for real earlier-stage problems, `BLOCKED` for reviewer/operational inability, `BLOCKED_CONFIGURATION` for missing/stale reviewer endpoint/account/Project state, and `BLOCKED_BUDGET` for exhausted review rounds.
 
-Never merge, approve a GitHub PR, mark it ready for review, force-push or perform a destructive reset unless a separate explicit user instruction authorizes it.
+Never merge, approve a GitHub PR, mark it ready, force-push or perform a destructive reset unless a separate explicit user instruction authorizes it.

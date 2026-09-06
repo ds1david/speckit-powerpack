@@ -1,3 +1,3 @@
-from .cli_account_binding import main
+from .cli_user_state import main
 
 raise SystemExit(main())

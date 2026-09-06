@@ -22,7 +22,7 @@ speckit-clarify
 
 `specify` normally creates/selects the SPEC before this cycle starts. It may be re-entered later only when an owner-stage handoff proves that scope/intent itself must change.
 
-The initial `speckit-implement` is a mandatory explicit phase. `speckit-implement-review` MUST NOT be used to skip it. The integrated review skill owns its own convergence, corrective implementation, Sol/xhigh review and mandatory ChatGPT Project Web review loops.
+The initial `speckit-implement` is a mandatory explicit phase. `speckit-implement-review` MUST NOT be used to skip it. The integrated review skill owns convergence, corrective implementation, Sol/xhigh review and mandatory ChatGPT Project Web review loops.
 
 ## Core invariants
 
@@ -30,17 +30,36 @@ The initial `speckit-implement` is a mandatory explicit phase. `speckit-implemen
 - Preserve `DISCOVER CAPABILITY -> SELECT STRATEGY -> EXECUTE CONTRACT`.
 - Never bypass a blocked prerequisite, constitution conflict, failed gate or unresolved finding.
 - Never convert convergence/review obligations to technical debt merely to finish the cycle.
-- Never merge, approve, mark ready, force-push or destructively reset as part of this workflow.
+- PRs remain `draft` during implementation, convergence and review work.
+- A PR may become `ready for review` only after implementation/review work is actually complete and only when that transition is required to trigger or validate GitHub CI.
+- After required CI gates are inspected, immediately return the PR to `draft`, regardless of whether CI passed or failed.
+- Never merge, approve, force-push or destructively reset as part of this workflow.
 - `implement_review` requires the same-SPEC completed `implement` receipt.
-- Findings and convergence gaps discovered after the initial implementation stay inside the active `implement-review` loop.
-- `implement_review` must pass `speckit-powerpack doctor` readiness before material review work.
+- Findings and convergence gaps discovered after initial implementation stay inside the active `implement-review` loop.
+- `implement_review` must pass `speckit-powerpack doctor --strict-review` before material review work.
 - `DONE` requires Sol/xhigh and mandatory ChatGPT Project Web approval of the same final snapshot.
+
+## PR draft / CI lifecycle
+
+Treat PR readiness as a short-lived CI control state, not as a review/completion state:
+
+```text
+DRAFT
+  -> implementation + convergence + reviews
+  -> implementation/review work complete
+  -> READY only if GitHub CI requires it
+  -> wait for required CI gates
+  -> inspect gate conclusions/evidence
+  -> immediately DRAFT again
+```
+
+Never mark a PR ready merely because a review round starts. Never keep it ready while findings are being implemented. Green CI does not imply user approval or merge authorization. CI failure still ends with the PR returned to draft after evidence is collected.
 
 ## Terminal UX and routing
 
-Before executing the first material phase, read `.specify/powerpack/model-routing.json` and show the planned routing rows for the phases that will actually run. On Codex, the expected primary routing is Terra/high parent, Luna for bounded economical work, Sol for semantic gates/review, plus the mandatory Web gate.
+Before executing the first material phase, read `.specify/powerpack/model-routing.json` and show the planned routing rows for phases that will actually run. On Codex, expected primary routing is Terra/high parent, Luna for bounded economical work, Sol for semantic gates/review, plus the mandatory Web gate.
 
-Use compact progress messages when changing phases, preserve the host's native tool/diff rendering, and finish by repeating the planned routing rows with observed result/timing fields. Never fabricate timing; use `N/D` when unavailable.
+Use compact progress messages when changing phases, preserve native tool/diff rendering, and finish by repeating routing rows with observed result/timing fields. Never fabricate timing; use `N/D` when unavailable.
 
 ## Configuration
 
@@ -101,13 +120,21 @@ After `analyze` is clean, the state machine MUST enter `implement`. Run `speckit
 
 ## Integrated implementation-review
 
-Before review work, `speckit-implement-review` must prove PowerPack readiness:
+Before review work, `speckit-implement-review` must prove strict PowerPack readiness:
 
 ```bash
-speckit-powerpack doctor
+speckit-powerpack doctor --strict-review
 ```
 
-Missing `playwright-consent`, browser readiness, exact Project binding or selected executor is a blocker, not an optional degradation to Codex-only completion.
+Missing reviewer service, authenticated reviewer account, exact Project binding or selected executor is a blocker, not an optional degradation to Codex-only completion.
+
+Resolve effective user-scoped reviewer binding with:
+
+```bash
+speckit-powerpack review binding show --path . --json
+```
+
+Require the configured `chatgpt-web2api` endpoint/account/Project id. Never silently switch reviewer endpoints or accounts to make the cycle complete.
 
 The active `implement_review` phase internally owns:
 
@@ -121,7 +148,7 @@ converge
   -> both gates approve same final snapshot
 ```
 
-Do **not** advance the full-cycle state on intermediate findings or convergence gaps. Continue the same review run until it reaches a terminal handoff.
+Do **not** advance full-cycle state on intermediate findings or convergence gaps. Continue the same review run until terminal handoff.
 
 Only after dual approval:
 
@@ -135,7 +162,7 @@ python .specify/powerpack/bin/full_cycle.py advance \
 
 ## Review budget
 
-If the configured budget is exhausted before dual approval, report `BLOCKED_BUDGET`, suggest an explicit extension (normally `speckit-implement-review extend 2`) and keep the top-level phase on `implement_review`.
+If configured budget is exhausted before dual approval, report `BLOCKED_BUDGET`, suggest an explicit extension (normally `speckit-implement-review extend 2`) and keep top-level phase on `implement_review`.
 
 ## Blocking, owner-stage return and resume
 
@@ -149,9 +176,9 @@ python .specify/powerpack/bin/full_cycle.py advance \
   --evidence "blocker / owner-stage handoff"
 ```
 
-Use the natural owner-stage repair path: requirements/scope -> specify/clarify, design -> plan, decomposition -> tasks, implementation -> implement. After repair, re-run derived gates rather than jumping ahead based only on artifact existence.
+Use natural owner-stage repair path: requirements/scope -> specify/clarify, design -> plan, decomposition -> tasks, implementation -> implement. After repair, re-run derived gates rather than jumping ahead based only on artifact existence.
 
-For Claude/Codex usage limits, use the PowerPack limit checkpoint mechanism. After a legitimate blocker or additional review budget is resolved:
+For Claude/Codex usage limits, use PowerPack limit checkpoint mechanism. After a legitimate blocker or additional review budget is resolved:
 
 ```bash
 python .specify/powerpack/bin/full_cycle.py resume --feature-dir <SPEC_DIR> --unblock
@@ -161,4 +188,4 @@ Abort removes only ephemeral cycle state; SPEC artifacts, implementation changes
 
 ## Completion
 
-`DONE` means the same SPEC passed the explicit implementation predecessor, integrated convergence, quality gates, independent Sol/xhigh review and mandatory ChatGPT Project Web review on the same final snapshot. It does NOT mean a GitHub PR is approved, ready or merged.
+`DONE` means the same SPEC passed explicit implementation predecessor, integrated convergence, quality gates, independent Sol/xhigh review and mandatory ChatGPT Project Web review on the same final snapshot through the configured `chatgpt-web2api` reviewer endpoint and Project id. It does NOT mean a PR is approved, mergeable or authorized to merge. After any CI-triggering ready state has served its purpose and required gates were inspected, the PR must be back in `draft`.
