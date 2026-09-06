@@ -32,6 +32,80 @@ if windows_lifecycle.winbridge.is_wsl() and native_lifecycle.detect_native_brows
     native_lifecycle.install_wsl_local_first_transport()
 
 
+def _web2api_state_ready(state: dict) -> bool:
+    """Return True only when the browser/CDP/driver path is actually usable.
+
+    Upstream `starting` is a valid cold state when Chrome + driver are connected.
+    `degraded` is deliberately rejected even if project listing happens to work,
+    because stale token/project reads must never authorize a reviewer whose CDP
+    path is unavailable or whose circuit breaker is open.
+    """
+    status = str(state.get("status") or "").casefold()
+    return bool(
+        status in {"starting", "healthy"}
+        and state.get("chrome_running") is True
+        and state.get("cdp_connected") is True
+        and state.get("driver_connected") is True
+        and not (state.get("open_breakers") or [])
+    )
+
+
+def _verify_endpoint_fail_closed(endpoint: str, *, require_projects: bool = True):
+    try:
+        state = web2api.health(endpoint, timeout=10)
+        projects = web2api.list_projects(endpoint, timeout=30)
+    except web2api.Web2APIError as exc:
+        raise core.PowerPackError(str(exc)) from exc
+
+    if not _web2api_state_ready(state):
+        raise core.PowerPackError(
+            "ChatGPT-Web2API is reachable, but the reviewer transport is not ready: "
+            f"status={state.get('status')} chrome={state.get('chrome_running')} "
+            f"cdp={state.get('cdp_connected')} driver={state.get('driver_connected')} "
+            f"open_breakers={state.get('open_breakers') or []}. "
+            "Keep the dedicated browser open and restore CDP/driver connectivity before authorizing or reviewing."
+        )
+    if require_projects and not projects:
+        raise core.PowerPackError(
+            f"ChatGPT-Web2API is reachable at {endpoint}, but returned no ChatGPT Projects. "
+            "Complete login in the dedicated browser, confirm the intended Plus account, and retry."
+        )
+    return state, projects
+
+
+# Harden every auth/validation call in cli_web2api_review without duplicating
+# its public command surface. This is intentionally fail-closed: a stale
+# project list must not turn a degraded reviewer into an authorized reviewer.
+web2api._verify_endpoint = _verify_endpoint_fail_closed
+_original_review_readiness = web2api.review_readiness
+
+
+def _strict_review_readiness(project: Path, *, live: bool = False) -> dict[str, bool]:
+    result = _original_review_readiness(project, live=False)
+    if not live:
+        return result
+
+    live_ok = False
+    try:
+        _, review = account_base._review_config(project)
+        web = review.get("chatgpt_web", {}) if isinstance(review, dict) else {}
+        profile = str(web.get("profile") or "") if isinstance(web, dict) else ""
+        project_id = str(web.get("project_id") or "") if isinstance(web, dict) else ""
+        _, data = core.global_config()
+        account = web2api._account_record(data, profile)
+        endpoint = str((account or {}).get("endpoint") or "")
+        if endpoint and web2api._authorized(account):
+            _, projects = _verify_endpoint_fail_closed(endpoint, require_projects=True)
+            live_ok = bool(project_id and project_id in {item.project_id for item in projects})
+    except (core.PowerPackError, web2api.Web2APIError):
+        live_ok = False
+    result["chatgpt-reviewer-service-live"] = live_ok
+    return result
+
+
+web2api.review_readiness = _strict_review_readiness
+
+
 def _command_project(args: argparse.Namespace) -> Path:
     raw = getattr(args, "path", None)
     return Path(raw or ".").expanduser().resolve()
@@ -86,7 +160,7 @@ def cmd_legacy_browser_flow_removed(args: argparse.Namespace) -> None:
 
 def _start_native_reviewer(args: argparse.Namespace, browser: dict[str, str]) -> None:
     profile = str(args.profile or web2api._active_profile() or "chatgpt-review")
-    print(f"Starting the dedicated ChatGPT-Web2API reviewer natively in the current runtime...")
+    print("Starting the dedicated ChatGPT-Web2API reviewer natively in the current runtime...")
     print(f"Native browser selected: {browser['name']} ({browser['path']})")
     if windows_lifecycle.winbridge.is_wsl():
         print("WSLg/native mode selected: PowerShell, Windows loopback and cross-OS CDP bridging are bypassed.")
