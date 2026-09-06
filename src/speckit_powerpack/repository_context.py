@@ -22,7 +22,10 @@ _EXCLUDE_RULES = (
     ".specify/powerpack/*.local.json",
 )
 _LOCAL_WEB_KEYS = (
+    "backend",
+    "endpoint",
     "project_alias",
+    "project_id",
     "project_url",
     "project_name",
     "profile",
@@ -107,7 +110,6 @@ def _normalize_remote(url: str) -> tuple[str, str, str]:
     if "://" in value:
         host, path, clean = _strip_credentials_http(value)
     else:
-        # SCP-like Git syntax: git@host:owner/repository.git
         match = re.match(r"^(?:[^@]+@)?([^:]+):(.+)$", value)
         if not match:
             return "", value, value
@@ -198,12 +200,7 @@ def _local_web_values(web: dict[str, Any]) -> dict[str, Any]:
 
 
 def migrate_versioned_local_binding(project: Path) -> bool:
-    """Move legacy per-user ChatGPT binding fields out of tracked review.json.
-
-    Returns True when review.json was sanitized. The effective local binding is
-    preserved in the user-scoped repository state before the tracked file is
-    changed.
-    """
+    """Move legacy per-user ChatGPT binding fields out of tracked review.json."""
     project = project.resolve()
     base_path = project / ".specify" / "powerpack" / "review.json"
     if not base_path.is_file():
@@ -233,12 +230,7 @@ def migrate_versioned_local_binding(project: Path) -> bool:
 
 
 def review_config(project: Path) -> tuple[Path, dict[str, Any]]:
-    """Return user-scoped repository review path plus effective base+user config.
-
-    Existing callers can keep writing the returned dictionary/path, but writes go
-    to ~/.config/speckit-powerpack/repositories/<repo-id>/review.json rather than
-    into the Git worktree.
-    """
+    """Return user-scoped repository review path plus effective base+user config."""
     project = project.resolve()
     base_path = project / ".specify" / "powerpack" / "review.json"
     if not base_path.is_file():
