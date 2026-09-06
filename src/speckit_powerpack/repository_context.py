@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 import hashlib
 import json
 from pathlib import Path
@@ -20,6 +20,22 @@ _EXCLUDE_RULES = (
     ".specify/powerpack/reviews.local.json",
     ".specify/powerpack/auth/",
     ".specify/powerpack/*.local.json",
+)
+_LOCAL_WEB_KEYS = (
+    "project_alias",
+    "project_url",
+    "project_name",
+    "profile",
+    "account_label",
+    "account_backend",
+    "host_scope",
+    "automation_browser_id",
+    "automation_browser_label",
+    "browser_channel",
+    "browser_automation",
+    "cdp_endpoint",
+    "profile_platform",
+    "authorization",
 )
 
 
@@ -146,7 +162,7 @@ def repository_state_dir(project: Path) -> Path:
         path.chmod(0o700)
     identity_path = path / "identity.json"
     identity_path.write_text(
-        json.dumps(identity.__dict__, indent=2, ensure_ascii=False) + "\n",
+        json.dumps(asdict(identity), indent=2, ensure_ascii=False) + "\n",
         encoding="utf-8",
     )
     if core.os.name != "nt":
@@ -175,6 +191,45 @@ def _deep_merge(base: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]
         else:
             result[key] = value
     return result
+
+
+def _local_web_values(web: dict[str, Any]) -> dict[str, Any]:
+    return {key: web.get(key) for key in _LOCAL_WEB_KEYS if web.get(key) not in {None, ""}}
+
+
+def migrate_versioned_local_binding(project: Path) -> bool:
+    """Move legacy per-user ChatGPT binding fields out of tracked review.json.
+
+    Returns True when review.json was sanitized. The effective local binding is
+    preserved in the user-scoped repository state before the tracked file is
+    changed.
+    """
+    project = project.resolve()
+    base_path = project / ".specify" / "powerpack" / "review.json"
+    if not base_path.is_file():
+        return False
+    base = _read_object(base_path)
+    web = base.get("chatgpt_web")
+    if not isinstance(web, dict):
+        return False
+    local_values = _local_web_values(web)
+    if not local_values:
+        return False
+
+    user_path = repository_state_dir(project) / "review.json"
+    existing_user = _read_object(user_path)
+    effective = _deep_merge(base, existing_user)
+    user_path.write_text(json.dumps(effective, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    if core.os.name != "nt":
+        user_path.chmod(0o600)
+
+    sanitized = json.loads(json.dumps(base))
+    sanitized_web = sanitized.setdefault("chatgpt_web", {})
+    for key in _LOCAL_WEB_KEYS:
+        if key in sanitized_web:
+            sanitized_web[key] = None
+    base_path.write_text(json.dumps(sanitized, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    return True
 
 
 def review_config(project: Path) -> tuple[Path, dict[str, Any]]:
@@ -224,7 +279,7 @@ def describe_binding(project: Path) -> dict[str, Any]:
     identity = repository_identity(project)
     user_path, effective = review_config(project)
     return {
-        "repository": identity.__dict__,
+        "repository": asdict(identity),
         "user_config": str(user_path),
         "chatgpt_web": effective.get("chatgpt_web", {}),
     }
