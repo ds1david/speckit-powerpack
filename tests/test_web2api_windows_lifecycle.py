@@ -28,17 +28,14 @@ def test_windows_reviewer_separates_browser_and_service_lifecycles(monkeypatch):
                 "pid": 0,
                 "browser_pid": 4321,
                 "endpoint": "http://127.0.0.1:8080",
-                "cdp_endpoint": "http://127.0.0.1:9222",
+                "chrome_cdp_ipv4": "http://127.0.0.1:9222/json/version",
+                "chrome_cdp_ipv6": "http://[::1]:9222/json/version",
                 "profile_dir": "C:/reviewer/chrome-profile",
-                "venv": "C:/reviewer/venv",
                 "stdout": "C:/reviewer/logs/web2api.out.log",
                 "stderr": "C:/reviewer/logs/web2api.err.log",
-                "browser_stdout": "C:/reviewer/logs/chrome.out.log",
                 "browser_stderr": "C:/reviewer/logs/chrome.err.log",
-                "python": "C:/reviewer/venv/Scripts/python.exe",
+                "cdp_transport": "not-ready",
                 "upstream_revision": "test",
-                "detached": True,
-                "browser_detached": True,
             }
         ).encode("utf-8")
 
@@ -56,15 +53,35 @@ def test_windows_reviewer_separates_browser_and_service_lifecycles(monkeypatch):
     assert "service.pid" in script
     assert "chrome://inspect/#remote-debugging" in script
     assert "waiting-remote-debugging" in script
-    assert "CDP is now live. Web2API sees an existing Chrome" in script
+    assert "http://127.0.0.1:$requestedCdpPort/json/version" in script
+    assert "http://[::1]:$requestedCdpPort/json/version" in script
+    assert "ipv6-via-user-bridge" in script
+    assert "cdp-bridge.pid" in script
+    assert "cdp-bridge.port" in script
+    assert "Get-FreeIpv4LoopbackPort" in script
+    assert "$web2apiCdpPort" in script
     assert script.index("waiting-remote-debugging") < script.index("$serviceArgv =")
-    launcher_b64 = script.split("FromBase64String('", 1)[1].split("')", 1)[0]
-    launcher = base64.b64decode(launcher_b64).decode("utf-8")
-    assert "DETACHED_PROCESS" in launcher
-    assert "CREATE_NEW_PROCESS_GROUP" in launcher
+
+    launcher_b64 = base64.b64encode(lifecycle._DETACHED_LAUNCHER_SOURCE.encode("utf-8")).decode("ascii")
+    assert launcher_b64 in script
+    assert "DETACHED_PROCESS" in lifecycle._DETACHED_LAUNCHER_SOURCE
+    assert "CREATE_NEW_PROCESS_GROUP" in lifecycle._DETACHED_LAUNCHER_SOURCE
+    assert "socket.AF_INET6" in lifecycle._TCP_BRIDGE_SOURCE
+    assert 'BridgeServer(("127.0.0.1", listen_port)' in lifecycle._TCP_BRIDGE_SOURCE
+
     assert result["phase"] == "waiting-remote-debugging"
-    assert result["browser_detached"] is True
     assert result["browser_pid"] == 4321
+    assert result["cdp_transport"] == "not-ready"
+
+
+def test_ipv6_bridge_is_standard_library_and_forwards_to_ipv6_loopback():
+    bridge = lifecycle._TCP_BRIDGE_SOURCE
+    assert "socketserver.ThreadingTCPServer" in bridge
+    assert "socket.AF_INET" in bridge
+    assert "socket.AF_INET6" in bridge
+    assert '("::1", target_port, 0, 0)' in bridge
+    assert "select.select" in bridge
+    assert "serve_forever" in bridge
 
 
 def test_wait_for_service_timeout_keeps_independent_browser_alive(monkeypatch):
