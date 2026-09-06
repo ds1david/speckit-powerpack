@@ -1,14 +1,22 @@
 {
-  "schema_version": 3,
+  "schema_version": 4,
   "mode": "interactive",
   "conversation_strategy": "one-per-pr",
   "deep_review": {
-    "schema_version": "2.0",
+    "schema_version": "2.1",
     "protocol_path": ".specify/powerpack/deep-review-protocol.md",
     "validate_output": true,
     "full_snapshot_each_round": true,
     "validate_previous_findings": true,
-    "adversarial_verdict_challenge": true
+    "adversarial_verdict_challenge": true,
+    "manifest_required": true,
+    "manifest_path": ".specify/powerpack/runtime/review-context.json",
+    "exact_changed_file_coverage": true,
+    "exact_requirement_coverage": true,
+    "inspection_evidence_required": true,
+    "context_gaps_block_approval": true,
+    "review_escape_tracking": true,
+    "final_two_gate_attestation": true
   },
   "codex": {
     "model": "gpt-5.6-sol",
@@ -27,7 +35,10 @@
     "account_label": null,
     "profile_scope": "platform",
     "profile_platform": null,
-    "authorization": null
+    "authorization": null,
+    "same_manifest_required": true,
+    "exact_snapshot_access_required": true,
+    "prompt_path": ".specify/powerpack/runtime/web-review-prompt.txt"
   },
   "quality_gate": {
     "mode": "auto-detect",
