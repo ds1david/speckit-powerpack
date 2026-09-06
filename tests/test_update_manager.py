@@ -33,9 +33,11 @@ def test_effective_source_follows_installed_feature_branch(monkeypatch):
     source = updates.effective_source({})
     assert source["ref"] == "feat/example"
     assert source["installed_commit"] == "a" * 40
+    assert source["pinned"] is False
 
 
-def test_exact_commit_install_falls_back_to_default_ref(monkeypatch):
+def test_exact_commit_install_remains_pinned_instead_of_falling_back_to_main(monkeypatch):
+    commit = "a" * 40
     monkeypatch.setattr(
         updates.metadata,
         "distribution",
@@ -43,12 +45,58 @@ def test_exact_commit_install_falls_back_to_default_ref(monkeypatch):
             "url": updates.DEFAULT_REPOSITORY,
             "vcs_info": {
                 "vcs": "git",
-                "commit_id": "a" * 40,
-                "requested_revision": "b" * 40,
+                "commit_id": commit,
+                "requested_revision": commit,
             },
         }),
     )
-    assert updates.effective_source({})["ref"] == "main"
+    source = updates.effective_source({})
+    assert source["ref"] == commit
+    assert source["pinned"] is True
+
+
+def test_check_update_does_not_compare_pinned_sha_with_main(monkeypatch):
+    commit = "a" * 40
+    monkeypatch.setattr(
+        updates,
+        "effective_source",
+        lambda config=None: {
+            "repository": updates.DEFAULT_REPOSITORY,
+            "ref": commit,
+            "installed_commit": commit,
+            "installed_requested_revision": commit,
+            "pinned": True,
+        },
+    )
+
+    def should_not_run(*args, **kwargs):
+        raise AssertionError("remote_sha must not run for an immutable pinned build")
+
+    monkeypatch.setattr(updates, "remote_sha", should_not_run)
+    result = updates.check_update({})
+    assert result["status"] == "PINNED"
+    assert result["installed_commit"] == commit
+    assert result["remote_commit"] == commit
+    assert result["ref"] == commit
+
+
+def test_explicit_config_ref_can_move_away_from_pinned_install(monkeypatch):
+    commit = "a" * 40
+    monkeypatch.setattr(
+        updates.metadata,
+        "distribution",
+        lambda name: FakeDistribution({
+            "url": updates.DEFAULT_REPOSITORY,
+            "vcs_info": {
+                "vcs": "git",
+                "commit_id": commit,
+                "requested_revision": commit,
+            },
+        }),
+    )
+    source = updates.effective_source({"ref": "main"})
+    assert source["ref"] == "main"
+    assert source["pinned"] is False
 
 
 def test_check_update_compares_installed_and_remote_commit(monkeypatch):
@@ -60,6 +108,7 @@ def test_check_update_compares_installed_and_remote_commit(monkeypatch):
             "ref": "main",
             "installed_commit": "a" * 40,
             "installed_requested_revision": "main",
+            "pinned": False,
         },
     )
     monkeypatch.setattr(updates, "remote_sha", lambda repository, ref: "b" * 40)
