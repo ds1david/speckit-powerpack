@@ -1,3 +1,3 @@
-from .cli_browser_accounts import main
+from .cli_web_review import main
 
 raise SystemExit(main())
