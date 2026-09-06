@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 from pathlib import Path
+import re
 import subprocess
 from typing import Iterable
 
@@ -34,7 +35,8 @@ def windows_cmd_argv(
     ampersands and parentheses. Building a cmd.exe command line can split one
     expression into multiple CLI operands. Serialize argv as UTF-8 JSON, embed
     it as Base64 in an EncodedCommand, reconstruct an argument array inside
-    PowerShell, and invoke the executable with array splatting.
+    Windows PowerShell, resolve the executable with Get-Command, and invoke it
+    with array splatting.
     """
     if not winbridge.is_wsl():
         raise winbridge.WindowsBrowserBridgeError(
@@ -59,7 +61,9 @@ $exe = [string]$argv[0]
 $rest = @()
 if ($argv.Count -gt 1) {{ $rest = @($argv[1..($argv.Count - 1)]) }}
 try {{
-  & $exe @rest
+  $commandInfo = Get-Command $exe -ErrorAction Stop
+  $resolved = if ($commandInfo.Source) {{ [string]$commandInfo.Source }} else {{ [string]$commandInfo.Name }}
+  & $resolved @rest
   $code = $LASTEXITCODE
   if ($null -eq $code) {{ $code = 0 }}
   exit [int]$code
@@ -91,9 +95,56 @@ try {{
     )
 
 
+def windows_node_version() -> str | None:
+    """Return the Windows-host Node version using the same argv-safe boundary."""
+    proc = windows_cmd_argv(["node", "--version"], timeout=30)
+    if proc.returncode != 0:
+        return None
+    text = (proc.stdout or proc.stderr or "").strip()
+    match = re.search(r"v?\d+(?:\.\d+){0,2}", text)
+    return match.group(0) if match else None
+
+
+def windows_node_compatible() -> bool:
+    value = windows_node_version()
+    if not value:
+        return False
+    match = re.search(r"(\d+)", value)
+    return bool(match and int(match.group(1)) >= 20)
+
+
+def ensure_windows_playwright_cli() -> None:
+    """Validate the actual Windows Playwright CLI path, not a separate proxy gate.
+
+    If npx can execute @playwright/cli through the same process boundary that
+    attach/eval/run-code will use, Node is necessarily available and usable.
+    This avoids false negatives where a standalone node probe and the real npx
+    execution observe different shell/path behavior.
+    """
+    proc = windows_cmd_argv(
+        ["npx.cmd", "--yes", winbridge.PLAYWRIGHT_CLI_PACKAGE, "--help"],
+        timeout=180,
+    )
+    if proc.returncode == 0:
+        return
+
+    node = windows_node_version()
+    detail = (proc.stderr or proc.stdout or "unknown Windows npx/@playwright/cli failure").strip()
+    node_text = node or "not detected through PowerPack transport"
+    raise winbridge.WindowsBrowserBridgeError(
+        "Could not prepare Playwright CLI on Windows through the WSL host bridge. "
+        f"Windows Node observed by PowerPack: {node_text}. Underlying npx error: {detail}"
+    )
+
+
 def apply() -> None:
     global _APPLIED
     if _APPLIED:
         return
     _APPLIED = True
+
+    # Replace the entire WSL -> Windows browser-tool boundary consistently.
     winbridge._windows_cmd = windows_cmd_argv
+    winbridge.windows_node_version = windows_node_version
+    winbridge.windows_node_compatible = windows_node_compatible
+    winbridge.ensure_windows_playwright_cli = ensure_windows_playwright_cli
