@@ -99,7 +99,7 @@ def _powershell(script: str, *, timeout: int = 30) -> subprocess.CompletedProces
 def _windows_find_executable(executable: str) -> str | None:
     registry_paths = WINDOWS_APP_PATHS.get(executable, [])
     registry_literal = ",".join(f"'{path}'" for path in registry_paths)
-    script = f"""
+    script = rf"""
 $c = Get-Command '{executable}' -ErrorAction SilentlyContinue
 if ($c -and $c.Source) {{ Write-Output $c.Source; exit 0 }}
 $paths = @({registry_literal})
