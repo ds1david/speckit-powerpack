@@ -10,6 +10,7 @@ from . import cli_account_binding as account_base
 from . import cli_web_review as previous
 from . import cli_web2api_review as web2api
 from . import repository_context as repoctx
+from . import web2api_native_lifecycle as native_lifecycle
 from . import web2api_windows_lifecycle as windows_lifecycle
 
 
@@ -23,6 +24,12 @@ account_base._review_config = repoctx.review_config
 # WSL command and the Web2API bridge. The lifecycle module owns this bootstrap.
 web2api.start_windows_service = windows_lifecycle.start_windows_service
 web2api.wait_for_service = windows_lifecycle.wait_for_service
+
+# If a Chromium browser exists inside WSL itself (for example Microsoft Edge
+# under WSLg), prefer the Linux-local reviewer endpoint on every invocation.
+# Windows localhost remains a connection-level fallback for older profiles.
+if windows_lifecycle.winbridge.is_wsl() and native_lifecycle.detect_native_browser():
+    native_lifecycle.install_wsl_local_first_transport()
 
 
 def _command_project(args: argparse.Namespace) -> Path:
@@ -77,8 +84,59 @@ def cmd_legacy_browser_flow_removed(args: argparse.Namespace) -> None:
     )
 
 
+def _start_native_reviewer(args: argparse.Namespace, browser: dict[str, str]) -> None:
+    profile = str(args.profile or web2api._active_profile() or "chatgpt-review")
+    print(f"Starting the dedicated ChatGPT-Web2API reviewer natively in the current runtime...")
+    print(f"Native browser selected: {browser['name']} ({browser['path']})")
+    if windows_lifecycle.winbridge.is_wsl():
+        print("WSLg/native mode selected: PowerShell, Windows loopback and cross-OS CDP bridging are bypassed.")
+    print("The reviewer uses a persistent browser profile owned by PowerPack; no personal browser cookies are copied.")
+    try:
+        info = native_lifecycle.start_native_service(
+            config_root=core.global_root(),
+            profile=profile,
+            port=int(args.port),
+            cdp_port=int(args.cdp_port),
+            install=not bool(args.no_install),
+            browser=browser,
+        )
+    except web2api.Web2APIError as exc:
+        raise core.PowerPackError(str(exc)) from exc
+
+    print(f"Reviewer host scope: {info.get('host_scope')}")
+    print(f"Dedicated browser profile: {info['profile_dir']}")
+    print(f"Service PID: {info.get('pid') or 'unknown'}")
+    print(f"Logs: {info['stdout']} | {info['stderr']}")
+
+    if info.get("phase") == "ready":
+        state = info.get("health") or {}
+        print(f"Reviewer service already ready: {info['endpoint']}")
+        print(f"Health: {state.get('status')} chrome={state.get('chrome_running')} cdp={state.get('cdp_connected')}")
+        print("Complete reviewer configuration with: speckit-powerpack review auth configure")
+        return
+
+    try:
+        state = native_lifecycle.wait_for_native_service(info, timeout=int(args.timeout))
+    except web2api.Web2APIError as exc:
+        raise core.PowerPackError(str(exc)) from exc
+
+    print(f"Reviewer service started: {info['endpoint']}")
+    print(f"Health: {state.get('status')} chrome={state.get('chrome_running')} cdp={state.get('cdp_connected')}")
+    if state.get("status") == "waiting-login":
+        print(f"Keep the {browser['name']} window open and finish ChatGPT/Google/SSO/MFA normally.")
+        print("The native reviewer process is detached and remains alive after this command returns.")
+        print("After login, run 'speckit-powerpack review service status --endpoint http://127.0.0.1:8080'.")
+    else:
+        print("Complete reviewer configuration with: speckit-powerpack review auth configure")
+
+
 def cmd_service_start(args: argparse.Namespace) -> None:
-    """WSL-aware service start with explicit remote-debugging onboarding phase."""
+    """Start reviewer in the simplest viable browser/runtime namespace."""
+    native_browser = native_lifecycle.detect_native_browser()
+    if native_browser:
+        _start_native_reviewer(args, native_browser)
+        return
+
     if not windows_lifecycle.winbridge.is_wsl():
         web2api.cmd_service_start(args)
         return
@@ -86,7 +144,7 @@ def cmd_service_start(args: argparse.Namespace) -> None:
     profile = str(args.profile or web2api._active_profile() or "chatgpt-review")
     port = int(args.port)
     cdp_port = int(args.cdp_port)
-    print("Starting the dedicated ChatGPT-Web2API reviewer on the Windows host...")
+    print("No native Chromium browser was detected in WSL; using the Windows-host reviewer bridge explicitly.")
     print("PowerPack owns a persistent Google Chrome profile; Web2API only starts after CDP is confirmed live.")
     print("No cookies/tokens are copied from personal browser profiles into WSL or the repository.")
     try:
@@ -182,7 +240,7 @@ def _wire_web2api_commands(parser: argparse.ArgumentParser) -> None:
     if "service" not in rsub.choices:
         service = rsub.add_parser("service", help="Manage the dedicated ChatGPT-Web2API reviewer service")
         ssub = service.add_subparsers(dest="service_command", required=True)
-        start = ssub.add_parser("start", help="Install/start one headed reviewer service and dedicated Chrome profile")
+        start = ssub.add_parser("start", help="Install/start one headed reviewer service and dedicated Chromium profile")
         start.add_argument("--profile", default=None)
         start.add_argument("--port", type=int, default=8080)
         start.add_argument("--cdp-port", type=int, default=9222)
