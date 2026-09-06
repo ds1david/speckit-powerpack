@@ -26,17 +26,17 @@ speckit-analyze
 
 ## Invariant: agnostic execution
 
-The workflow contract is always:
+Always use:
 
 ```text
 DISCOVER CAPABILITY -> SELECT STRATEGY -> EXECUTE CONTRACT
 ```
 
-Do not hard-code project language/build behavior. Platform/browser behavior is resolved by the PowerPack runtime/configuration.
+Do not hard-code project language/build behavior. Platform/browser behavior is resolved by PowerPack runtime and the effective user-scoped reviewer binding.
 
 ## Mandatory PowerPack/Web readiness
 
-Before convergence or review, run:
+Before convergence or review run:
 
 ```bash
 speckit-powerpack doctor --strict-review
@@ -46,14 +46,22 @@ If it fails, STOP with `BLOCKED_CONFIGURATION`.
 
 A plain `speckit-powerpack doctor` is diagnostic and may report `SETUP`; `--strict-review` is the mandatory execution gate.
 
-The mandatory Web gate requires:
+Then resolve the **effective** reviewer identity with:
 
-- an account-scoped Web-review authorization;
-- an exact Project alias/URL/profile binding;
-- the configured `account_label` that identifies the ChatGPT account performing review;
-- a supported browser backend for that account;
-- live validation of the selected desktop-browser session when using `desktop-browser-context`;
-- selected executor availability.
+```bash
+speckit-powerpack review binding show --path . --json
+```
+
+Do not infer reviewer identity from `.specify/powerpack/review.json`. That file contains the versionable review policy only. Account/browser/Project binding is user-scoped under the PowerPack config root and keyed by the normalized Git repository identity.
+
+The binding output must prove:
+
+- repository identity/provider;
+- exact Project alias/name/URL;
+- reviewer logical profile;
+- `account_label` identifying the ChatGPT account that performs Web review;
+- supported browser backend and browser host;
+- valid authorization.
 
 ## Reviewer identity model
 
@@ -64,7 +72,10 @@ PowerPack logical profile = local reviewer identity
 ChatGPT account           = account authenticated in the selected browser
 browser                   = desktop browser carrying that account/session
 Project binding           = ChatGPT Project reviewed by that account
+repository identity       = normalized Git remote, or local path when no remote exists
 ```
+
+The repository identity is provider-agnostic: GitHub, GitLab, Bitbucket, Azure DevOps and self-hosted Git are all valid.
 
 A user may intentionally maintain multiple ChatGPT accounts in different browsers. Example:
 
@@ -74,26 +85,13 @@ atsel
 └─ webflow-chrome  -> account=webflow-plus  -> browser=Chrome
 ```
 
-The selected `Project + logical profile/account + browser backend` is authoritative for a Web review run.
+The same Project may have multiple account bindings. Switching the profile changes the Web reviewer identity and must be explicit.
 
 ### No automatic fallback
 
 PowerPack MUST NOT silently change browser, account, profile, Project or authentication backend after a failure.
 
 The interactive authorization UI MAY offer **`try another browser/account` only as an explicit user decision**. This is not fallback: the failed attempt persists no grant, the user chooses a new reviewer identity, and the new browser/session is validated from the beginning.
-
-A reviewer change must therefore be visible and intentional:
-
-```text
-selected browser/account fails
-  -> no grant persisted
-  -> user explicitly chooses TRY ANOTHER
-  -> select another browser/account
-  -> authenticate
-  -> grant automation permission
-  -> validate session
-  -> persist new reviewer authorization
-```
 
 Never automatically drop from desktop-browser context to isolated Chromium, another browser, another account or a Codex-only completion path.
 
@@ -111,19 +109,19 @@ The same browser selected for the reviewer account is used from login through au
 
 ```text
 select browser/account
-  -> open chatgpt.com WITHOUT Playwright control
+  -> open chatgpt.com without Playwright control
   -> complete Google/SSO/MFA in that browser
   -> explicitly grant remote-debugging/automation permission
   -> Playwright attaches to that SAME browser/session
   -> validate normal authenticated ChatGPT UI
-  -> persist authorization
+  -> persist authorization outside the repository
 ```
 
-PowerPack must not copy browser cookies, passwords, MFA material, OAuth tokens or browser profile data into the repository or WSL.
+PowerPack must not copy browser cookies, passwords, MFA material, OAuth tokens or browser profile data into the repository.
 
-Chromium-family browsers with a supported CDP attachment mechanism may be eligible. Chrome/Edge may use a recognized attach channel; Chromium-family alternatives may require an explicit CDP endpoint.
+Chromium-family browsers with a supported CDP attachment mechanism may be eligible. Chrome/Edge may use recognized attach channels; Chromium-family alternatives may require an explicit CDP endpoint.
 
-Firefox may be detected and shown to the user, but an already-running branded Firefox session is **not** to be treated as attach-compatible merely because Playwright supports launching Firefox. If no real existing-session automation backend is available, Firefox is not eligible for the automated Web gate. Fail clearly; do not fake support or switch silently.
+Firefox may be detected and shown to the user, but an already-running branded Firefox session is not considered attach-compatible unless a real existing-session automation backend is implemented. Fail clearly; do not fake support or switch silently.
 
 ### `isolated-playwright` — legacy/explicit configuration only
 
@@ -131,23 +129,23 @@ Existing explicit isolated authorizations may remain readable for migration comp
 
 ## Account setup
 
-Primary setup is interactive:
+Primary setup:
 
 ```bash
 speckit-powerpack review auth configure
 ```
 
-Reconfiguration is also interactive:
+Reconfiguration:
 
 ```bash
 speckit-powerpack review auth reconfigure
 ```
 
-When an existing valid grant is selected, the CLI must ask whether to replace it. Declining preserves the existing authorization unchanged.
+When an existing valid grant is selected, ask whether to replace it. Declining preserves the existing authorization unchanged.
 
 A reconfiguration that changes browser/account invalidates previous Project bindings for that logical reviewer until the Project is re-verified.
 
-List/select accounts with:
+Useful commands:
 
 ```bash
 speckit-powerpack review auth list
@@ -157,14 +155,14 @@ speckit-powerpack review auth validate <profile>
 
 ## Project binding
 
-After account authorization, discover/select a Project:
+After account authorization:
 
 ```bash
 speckit-powerpack review project discover --profile <profile>
 speckit-powerpack review project select --profile <profile> --path .
 ```
 
-Known/shared Project URL:
+Known/shared URL:
 
 ```bash
 speckit-powerpack review project add '<project-url>' --profile <profile> --alias <alias> --path .
@@ -182,7 +180,13 @@ Switch an already registered Project/account pair:
 speckit-powerpack review project use <alias> --profile <profile> --path .
 ```
 
-The same Project may have multiple account bindings. Switching the profile changes the Web reviewer identity and must be explicit.
+Validate the final persisted mapping with:
+
+```bash
+speckit-powerpack review binding show --path .
+```
+
+The binding is stored under the user configuration root, not in the Git worktree.
 
 ## Terminal UX and model routing
 
@@ -190,7 +194,7 @@ Before the first material action:
 
 1. run `python .specify/powerpack/bin/powerpack.py model route --stage implement-review`;
 2. read `.specify/powerpack/model-routing.json`;
-3. show a compact planned routing table with `Etapa | Modelo | Effort | Condição | Por que este modelo`;
+3. show `Etapa | Modelo | Effort | Condição | Por que este modelo`;
 4. include parent/orchestrator, convergence, Sol reviewer and mandatory Web gate as separate rows;
 5. mark conditional routes as conditional.
 
@@ -250,7 +254,7 @@ Run:
 python .specify/powerpack/bin/powerpack.py review route
 ```
 
-The effective reviewer contract is always `gpt-5.6-sol`, reasoning `xhigh`, read-only.
+The effective reviewer contract is always `gpt-5.6-sol/xhigh/read-only`.
 
 ### Claude Code executor
 
@@ -265,7 +269,7 @@ For independent review:
 - if the current Codex context is already provably `gpt-5.6-sol/xhigh/read-only`, it may review directly;
 - otherwise delegate to exactly one in-session Sol reviewer/subagent configured for `gpt-5.6-sol/xhigh/read-only`;
 - NEVER launch another `codex` CLI recursively;
-- if the Sol/xhigh/read-only route cannot be proven, return `BLOCKED`.
+- if the Sol route cannot be proven, return `BLOCKED`.
 
 Sol is read-only. Terra implements findings after control returns.
 
@@ -298,39 +302,39 @@ python .specify/powerpack/bin/review_protocol.py validate --input <review.json>
 
 On round 2+ add `--previous <previous-review.json>`.
 
-Authoritative classifications:
-
-- `VALID` -> proceed;
-- `BLOCKED_REVIEW_CONTRACT` -> stop;
-- `BLOCKED_REPEATED_FINDING` -> stop with evidence.
-
 `APPROVED` requires no findings plus complete evidence/coverage required by the protocol.
 
 ## Start / resume review state
 
-Read `.specify/powerpack/review.json` and require:
+Resolve the effective binding from user scope:
+
+```bash
+speckit-powerpack review binding show --path . --json
+```
+
+Require:
 
 ```text
 chatgpt_web.required = true
 chatgpt_web.enabled = true
-chatgpt_web.authorization = playwright-account-consent
+chatgpt_web.authorization = valid explicit account/project authorization
 chatgpt_web.project_url = configured exact Project URL
-chatgpt_web.project_alias = configured local Project alias
+chatgpt_web.project_alias = configured Project alias
 chatgpt_web.profile = configured reviewer logical profile
 chatgpt_web.account_label = configured ChatGPT account identity
 chatgpt_web.account_backend = desktop-browser-context | isolated-playwright
 ```
 
-For `desktop-browser-context`, also require the persisted host/browser attachment data and a live session check from `doctor --strict-review`.
+For `desktop-browser-context`, also require persisted host/browser attachment data and the live session proof from `doctor --strict-review`.
 
 Do not silently substitute another account/browser even if it has access to the same Project.
 
-Start state:
+Start state with the Project URL returned by the effective binding:
 
 ```bash
 python .specify/powerpack/bin/powerpack.py review start \
   --mode auto \
-  --project-url <configured-project-url>
+  --project-url <effective-project-url>
 ```
 
 `extend N` resumes the same review state; it does not create a new initial predecessor.
@@ -394,7 +398,13 @@ Unknown/ambiguous architectures fail closed unless project configuration defines
 
 Run Web review only after Sol has no findings for the current snapshot.
 
-Use only the exact reviewer identity from `.specify/powerpack/review.json`:
+Obtain the exact reviewer identity only from:
+
+```bash
+speckit-powerpack review binding show --path . --json
+```
+
+Use exactly the returned:
 
 ```text
 profile + account_label + account_backend + browser/host + Project alias/URL
@@ -404,7 +414,7 @@ For `desktop-browser-context`, attach to the configured running browser instance
 
 If the live attach/session check fails, return `BLOCKED_CONFIGURATION`. Do not silently switch browser/account/backend.
 
-An explicit user-triggered `try another browser/account` belongs to **authorization/reconfiguration**, not to an active review run. After reconfiguration, revalidate the Project binding and restart the Web gate under the newly selected reviewer identity.
+An explicit user-triggered `try another browser/account` belongs to authorization/reconfiguration, not to an active review run. After reconfiguration, revalidate the Project binding and restart the Web gate under the newly selected reviewer identity.
 
 If Web produces findings:
 
