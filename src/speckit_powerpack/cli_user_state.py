@@ -7,25 +7,15 @@ import sys
 
 from . import cli as core
 from . import cli_account_binding as account_base
-from . import cli_desktop_auth as desktop_auth
 from . import cli_web_review as previous
+from . import cli_web2api_review as web2api
 from . import repository_context as repoctx
-from . import browser_extension_transport
-from . import windows_argv_transport
-from . import extension_background_attach
 
 
-# Apply host-browser semantics after all CLI layers are imported. Edge/Chrome
-# use the existing authenticated browser through the official Playwright
-# Extension; WSL -> Windows argv is shell-safe; and the long-lived extension
-# attach is considered ready only when the named session answers a probe.
-browser_extension_transport.apply()
-windows_argv_transport.apply()
-extension_background_attach.apply()
-
-# All command layers share this module object. Replacing the legacy worktree
-# reader here moves subsequent reads/writes to the user-scoped repository state
-# without duplicating each account/project command implementation.
+# Personal reviewer/account/Project state is resolved outside the repository.
+# Browser automation is delegated to ChatGPT-Web2API; the PowerPack talks only
+# to its localhost REST contract and therefore does not own Playwright/CDP/UI
+# selectors in the functional review path.
 account_base._review_config = repoctx.review_config
 
 
@@ -56,12 +46,13 @@ def cmd_binding_show(args: argparse.Namespace) -> None:
     print(f"  portable identity: {'yes' if repository.get('portable') else 'no (local path fallback)'}")
     print(f"  user-scoped config: {data.get('user_config')}")
     print("  worktree binding file: none")
+    print(f"  reviewer backend: {web.get('backend') or web.get('account_backend') or 'NOT CONFIGURED'}")
     print(f"  reviewer profile: {web.get('profile') or 'NOT CONFIGURED'}")
     print(f"  reviewer account: {web.get('account_label') or 'NOT CONFIGURED'}")
-    print(f"  browser: {web.get('automation_browser_id') or web.get('browser_channel') or 'NOT CONFIGURED'}")
-    print(f"  browser host: {web.get('host_scope') or 'NOT CONFIGURED'}")
+    print(f"  reviewer endpoint: {web.get('endpoint') or 'NOT CONFIGURED'}")
     print(f"  Project alias: {web.get('project_alias') or 'NOT CONFIGURED'}")
     print(f"  Project name: {web.get('project_name') or 'NOT CONFIGURED'}")
+    print(f"  Project id: {web.get('project_id') or 'NOT CONFIGURED'}")
     print(f"  Project URL: {web.get('project_url') or 'NOT CONFIGURED'}")
     print(f"  authorization: {web.get('authorization') or 'NOT CONFIGURED'}")
 
@@ -72,6 +63,72 @@ def cmd_binding_path(args: argparse.Namespace) -> None:
     print(repoctx.repository_state_dir(project) / "review.json")
 
 
+def _wire_web2api_commands(parser: argparse.ArgumentParser) -> None:
+    root = account_base._subparsers(parser)
+
+    doctor = root.choices["doctor"]
+    doctor.set_defaults(func=web2api.cmd_doctor)
+
+    review = root.choices["review"]
+    rsub = account_base._subparsers(review)
+
+    auth = rsub.choices["auth"]
+    asub = account_base._subparsers(auth)
+    for name, func in {
+        "configure": web2api.cmd_auth_configure,
+        "reconfigure": web2api.cmd_auth_configure,
+        "list": web2api.cmd_auth_list,
+        "validate": web2api.cmd_auth_validate,
+        "use": web2api.cmd_auth_use,
+        "logout": web2api.cmd_auth_logout,
+    }.items():
+        if name in asub.choices:
+            asub.choices[name].set_defaults(func=func)
+
+    project = rsub.choices["project"]
+    psub = account_base._subparsers(project)
+    for name, func in {
+        "discover": web2api.cmd_project_discover,
+        "select": web2api.cmd_project_select,
+        "add": web2api.cmd_project_add,
+        "accept-invite": web2api.cmd_project_add,
+        "use": web2api.cmd_project_use,
+        "list": web2api.cmd_project_list,
+    }.items():
+        if name in psub.choices:
+            psub.choices[name].set_defaults(func=func)
+
+    if "smoke-test" in rsub.choices:
+        rsub.choices["smoke-test"].set_defaults(func=web2api.cmd_review_smoke_test)
+
+    if "service" not in rsub.choices:
+        service = rsub.add_parser("service", help="Manage the dedicated ChatGPT-Web2API reviewer service")
+        ssub = service.add_subparsers(dest="service_command", required=True)
+        start = ssub.add_parser("start", help="Install/start one headed reviewer service and dedicated Chrome profile")
+        start.add_argument("--profile", default=None)
+        start.add_argument("--port", type=int, default=8080)
+        start.add_argument("--cdp-port", type=int, default=9222)
+        start.add_argument("--timeout", type=int, default=45)
+        start.add_argument("--no-install", action="store_true", help="Require an existing ChatGPT-Web2API installation")
+        start.set_defaults(func=web2api.cmd_service_start)
+        status = ssub.add_parser("status", help="Show live reviewer service health")
+        status.add_argument("--endpoint", default=None)
+        status.add_argument("--timeout", type=int, default=10)
+        status.set_defaults(func=web2api.cmd_service_status)
+
+    if "run" not in rsub.choices:
+        run = rsub.add_parser("run", help="Send one prompt to the repository's bound ChatGPT Project reviewer")
+        run.add_argument("--path", default=".")
+        source = run.add_mutually_exclusive_group(required=True)
+        source.add_argument("--prompt")
+        source.add_argument("--prompt-file")
+        run.add_argument("--model", default=None)
+        run.add_argument("--timeout", type=int, default=180)
+        run.add_argument("--output", help="Write only the assistant response to this file")
+        run.add_argument("--json", action="store_true")
+        run.set_defaults(func=web2api.cmd_review_run)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = previous.build_parser()
     root = account_base._subparsers(parser)
@@ -80,28 +137,26 @@ def build_parser() -> argparse.ArgumentParser:
     if "binding" not in rsub.choices:
         binding = rsub.add_parser("binding", help="Inspect the user-scoped repository-to-ChatGPT reviewer binding")
         bsub = binding.add_subparsers(dest="binding_command", required=True)
-        show = bsub.add_parser("show", help="Show repository identity, reviewer account/browser and bound ChatGPT Project")
+        show = bsub.add_parser("show", help="Show repository identity, reviewer endpoint/account and bound ChatGPT Project")
         show.add_argument("--path", default=".")
         show.add_argument("--json", action="store_true")
         show.set_defaults(func=cmd_binding_show)
         path = bsub.add_parser("path", help="Print the user-scoped binding file path")
         path.add_argument("--path", default=".")
         path.set_defaults(func=cmd_binding_path)
+    _wire_web2api_commands(parser)
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     account_base._review_config = repoctx.review_config
-    core.review_readiness = lambda project: desktop_auth.review_readiness(project)
-    core.print_review_setup_status = desktop_auth.print_review_setup_status
+    core.review_readiness = lambda project: web2api.review_readiness(project)
+    core.print_review_setup_status = web2api.print_review_setup_status
     args = build_parser().parse_args(argv)
     project = _command_project(args)
     try:
-        # Do this before configuration so legacy per-repository account/Project
-        # fields are migrated before any new mutation. It is safe on non-Git dirs.
         _prepare_repository_state(project)
         args.func(args)
-        # install/init may have created .specify during the command.
         _prepare_repository_state(project)
         return 0
     except (core.PowerPackError, core.UpdateError) as exc:
@@ -113,5 +168,5 @@ def main(argv: list[str] | None = None) -> int:
 
 
 account_base._review_config = repoctx.review_config
-core.review_readiness = lambda project: desktop_auth.review_readiness(project)
-core.print_review_setup_status = desktop_auth.print_review_setup_status
+core.review_readiness = lambda project: web2api.review_readiness(project)
+core.print_review_setup_status = web2api.print_review_setup_status
