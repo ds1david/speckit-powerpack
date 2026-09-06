@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 import re
-from typing import Any
 
 from . import desktop_browser_bridge as desktop
 
@@ -12,8 +11,6 @@ DEFAULT_SMOKE_PROMPT = (
     "me diga qual é o nome do projeto e sua principal missão, produza uma resposta simplificada "
     "de no máximo 100 palavras. e me responda quanto é 1 +1"
 )
-
-_RESULT_MARKER = "POWERPACK_REVIEW_JSON:"
 
 
 class WebReviewSmokeError(RuntimeError):
@@ -34,12 +31,10 @@ class WebReviewSmokeResult:
 def _playwright_script(project_url: str, prompt: str, timeout_ms: int) -> str:
     project_json = json.dumps(project_url, ensure_ascii=False)
     prompt_json = json.dumps(prompt, ensure_ascii=False)
-    marker_json = json.dumps(_RESULT_MARKER)
     return f"""async page => {{
   const projectUrl = {project_json};
   const prompt = {prompt_json};
   const timeoutMs = {timeout_ms};
-  const marker = {marker_json};
 
   await page.goto(projectUrl, {{ waitUntil: 'domcontentloaded', timeout: timeoutMs }});
 
@@ -146,7 +141,7 @@ def _playwright_script(project_url: str, prompt: str, timeout_ms: int) -> str:
   if (!response) throw new Error('ChatGPT returned an empty assistant response.');
   const responseWords = response.split(/\\s+/).filter(Boolean).length;
   const arithmeticCheck = /(^|\\D)2(\\D|$)/.test(response) || /\\bdois\\b/i.test(response) || /\\btwo\\b/i.test(response);
-  const result = {{
+  return {{
     project_url_requested: projectUrl,
     project_url_loaded: loaded.href,
     conversation_url: page.url(),
@@ -155,31 +150,26 @@ def _playwright_script(project_url: str, prompt: str, timeout_ms: int) -> str:
     arithmetic_check: arithmeticCheck,
     max_words_check: responseWords <= 100
   }};
-  return marker + JSON.stringify(result);
 }}"""
 
 
 def _parse_result(stdout: str, stderr: str) -> WebReviewSmokeResult:
-    text = (stdout or "") + "\n" + (stderr or "")
-    marker_index = text.find(_RESULT_MARKER)
-    if marker_index < 0:
-        raise WebReviewSmokeError("Playwright CLI returned no machine-readable Web review result.")
-    payload = text[marker_index + len(_RESULT_MARKER):].strip()
-
-    # --raw normally returns the string directly; depending on the CLI version it may
-    # still be JSON-quoted or followed by a newline/status fragment.
-    if payload.startswith('"'):
-        try:
-            decoded = json.loads(payload.splitlines()[0])
-            if isinstance(decoded, str) and decoded.startswith("{"):
-                payload = decoded
-        except json.JSONDecodeError:
-            pass
+    # playwright-cli run-code JSON.stringify()s the function return value. With
+    # --raw, stdout should therefore be the returned JSON object and nothing else.
+    payload = (stdout or "").strip()
+    if not payload:
+        detail = (stderr or "").strip()
+        raise WebReviewSmokeError(
+            "Playwright CLI returned no machine-readable Web review result"
+            + (f": {detail}" if detail else ".")
+        )
 
     decoder = json.JSONDecoder()
     try:
         value, _ = decoder.raw_decode(payload)
     except json.JSONDecodeError as exc:
+        # Be tolerant of a future CLI version adding one short status line around
+        # raw output, but never scrape arbitrary browser text as a result.
         match = re.search(r"(\{.*\})", payload, flags=re.DOTALL)
         if not match:
             raise WebReviewSmokeError("Could not parse the Web review result returned by Playwright CLI.") from exc
