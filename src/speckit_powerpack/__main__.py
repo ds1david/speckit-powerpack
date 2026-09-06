@@ -1,3 +1,3 @@
-from .cli_desktop_auth import main
+from .cli_browser_accounts import main
 
 raise SystemExit(main())
