@@ -5,9 +5,7 @@ import base64
 import json
 from pathlib import Path
 import re
-import shutil
 import subprocess
-import sys
 import time
 from typing import Any
 from urllib import error as urlerror
@@ -281,9 +279,10 @@ def start_windows_service(
     communicates with the REST endpoint through Windows loopback, so no port
     proxy or browser-cookie copying is needed.
 
-    The upstream reviewer is installed from a pinned GitHub archive rather
-    than PyPI. This keeps the bootstrap reproducible and does not require a
-    Windows Git client.
+    The upstream reviewer is installed from a pinned GitHub archive into a
+    dedicated per-reviewer Windows virtual environment. This keeps the
+    bootstrap reproducible, avoids user-Python/PATH pollution, and does not
+    require a Windows Git client.
     """
     if not winbridge.is_wsl():
         raise Web2APIError("Windows reviewer bootstrap is only valid when PowerPack runs under WSL.")
@@ -312,28 +311,48 @@ if ([int]$parts[0] -lt 3 -or ([int]$parts[0] -eq 3 -and [int]$parts[1] -lt 11)) 
   [Console]::Error.WriteLine("Python 3.11+ is required on Windows; detected $versionText")
   exit 11
 }}
-if ({install_literal}) {{
-  $source = '{source_url}'
-  $pipOutput = (& $pythonExe -m pip install --disable-pip-version-check --user --upgrade $source 2>&1 | Out-String)
-  if ($LASTEXITCODE -ne 0) {{
-    [Console]::Error.WriteLine("Could not install pinned ChatGPT-Web2API from $source.`n$($pipOutput.Trim())")
+$root = Join-Path $env:LOCALAPPDATA 'SpecKitPowerPack\\reviewers\\{_ps_quote(safe_profile)}'
+$venv = Join-Path $root 'venv'
+$chromeProfile = Join-Path $root 'chrome-profile'
+$logs = Join-Path $root 'logs'
+New-Item -ItemType Directory -Force -Path $root,$chromeProfile,$logs | Out-Null
+$servicePython = Join-Path $venv 'Scripts\\python.exe'
+if ({install_literal} -and -not (Test-Path $servicePython)) {{
+  & $pythonExe -m venv $venv
+  if ($LASTEXITCODE -ne 0 -or -not (Test-Path $servicePython)) {{
+    [Console]::Error.WriteLine('Could not create the dedicated ChatGPT-Web2API virtual environment.')
     exit 12
   }}
 }}
-& $pythonExe -c "import chatgpt_web2api" 2>$null
-if ($LASTEXITCODE -ne 0) {{
-  [Console]::Error.WriteLine('ChatGPT-Web2API is not importable for the selected Windows Python after installation.')
+if (-not (Test-Path $servicePython)) {{
+  [Console]::Error.WriteLine("Dedicated reviewer environment is missing: $servicePython. Re-run service start without --no-install.")
   exit 13
 }}
-$root = Join-Path $env:LOCALAPPDATA 'SpecKitPowerPack\\reviewers\\{_ps_quote(safe_profile)}'
-$chromeProfile = Join-Path $root 'chrome-profile'
-$logs = Join-Path $root 'logs'
-New-Item -ItemType Directory -Force -Path $chromeProfile,$logs | Out-Null
+if ({install_literal}) {{
+  $source = '{source_url}'
+  $previousErrorActionPreference = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  try {{
+    $pipOutput = (& $servicePython -m pip install --disable-pip-version-check --no-warn-script-location --upgrade $source 2>&1 | Out-String)
+    $pipExitCode = $LASTEXITCODE
+  }} finally {{
+    $ErrorActionPreference = $previousErrorActionPreference
+  }}
+  if ($pipExitCode -ne 0) {{
+    [Console]::Error.WriteLine("Could not install pinned ChatGPT-Web2API from $source.`n$($pipOutput.Trim())")
+    exit 14
+  }}
+}}
+& $servicePython -c "import chatgpt_web2api" 2>$null
+if ($LASTEXITCODE -ne 0) {{
+  [Console]::Error.WriteLine('ChatGPT-Web2API is not importable from the dedicated reviewer environment after installation.')
+  exit 15
+}}
 $stdout = Join-Path $logs 'web2api.out.log'
 $stderr = Join-Path $logs 'web2api.err.log'
 $args = @('-m','chatgpt_web2api','start','--host','127.0.0.1','--port','{port}','--cdp-port','{cdp_port}','--user-data-dir',$chromeProfile)
-$proc = Start-Process -FilePath $pythonExe -ArgumentList $args -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru
-@{{ pid=$proc.Id; endpoint='http://127.0.0.1:{port}'; profile_dir=$chromeProfile; stdout=$stdout; stderr=$stderr; python=$pythonExe; upstream_revision='{WEB2API_REVISION}' }} | ConvertTo-Json -Compress
+$proc = Start-Process -FilePath $servicePython -ArgumentList $args -RedirectStandardOutput $stdout -RedirectStandardError $stderr -PassThru
+@{{ pid=$proc.Id; endpoint='http://127.0.0.1:{port}'; profile_dir=$chromeProfile; venv=$venv; stdout=$stdout; stderr=$stderr; python=$servicePython; upstream_revision='{WEB2API_REVISION}' }} | ConvertTo-Json -Compress
 """
     encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
     try:
