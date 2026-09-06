@@ -10,6 +10,7 @@ from . import cli_account_binding as account_base
 from . import cli_web_review as previous
 from . import cli_web2api_review as web2api
 from . import repository_context as repoctx
+from . import web2api_windows_lifecycle as windows_lifecycle
 
 
 # Personal reviewer/account/Project state is resolved outside the repository.
@@ -17,6 +18,14 @@ from . import repository_context as repoctx
 # to its localhost REST contract and therefore does not own Playwright/CDP/UI
 # selectors in the functional review path.
 account_base._review_config = repoctx.review_config
+
+# WSL -> Windows first-login is a long-lived browser interaction. Patch the
+# Web2API command layer with a detached Windows launcher so ending the WSL
+# bootstrap command cannot tear down the reviewer process/Chrome. A REST
+# readiness timeout during first login is reported as waiting-login, not as a
+# fatal backend failure; `review service status` remains the explicit live gate.
+web2api.start_windows_service = windows_lifecycle.start_windows_service
+web2api.wait_for_service = windows_lifecycle.wait_for_service
 
 
 def _command_project(args: argparse.Namespace) -> Path:
