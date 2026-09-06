@@ -219,8 +219,10 @@ if (Test-Path $servicePidFile) {{
 # only attach after CDP consent is proven live.
 $chromeExe = $null
 $chromeCandidates = @()
-if ($env:ProgramFiles) {{ $chromeCandidates += (Join-Path $env:ProgramFiles 'Google\\Chrome\\Application\\chrome.exe') }}
-if ($env:'ProgramFiles(x86)') {{ $chromeCandidates += (Join-Path $env:'ProgramFiles(x86)' 'Google\\Chrome\\Application\\chrome.exe') }}
+$programFiles = [Environment]::GetEnvironmentVariable('ProgramFiles')
+$programFilesX86 = [Environment]::GetEnvironmentVariable('ProgramFiles(x86)')
+if ($programFiles) {{ $chromeCandidates += (Join-Path $programFiles 'Google\\Chrome\\Application\\chrome.exe') }}
+if ($programFilesX86) {{ $chromeCandidates += (Join-Path $programFilesX86 'Google\\Chrome\\Application\\chrome.exe') }}
 if ($env:LOCALAPPDATA) {{ $chromeCandidates += (Join-Path $env:LOCALAPPDATA 'Google\\Chrome\\Application\\chrome.exe') }}
 foreach ($candidate in $chromeCandidates) {{ if (Test-Path $candidate) {{ $chromeExe = $candidate; break }} }}
 if (-not $chromeExe) {{
