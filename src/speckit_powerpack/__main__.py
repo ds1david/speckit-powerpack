@@ -1,3 +1,3 @@
-from .cli_interactive_auth import main
+from .cli_desktop_auth import main
 
 raise SystemExit(main())
