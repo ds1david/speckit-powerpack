@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 import os
 from pathlib import Path
 import re
 import shutil
 import subprocess
-from typing import Iterable
+import sys
 
 from . import windows_browser_bridge as winbridge
 
@@ -42,51 +43,101 @@ class BrowserCandidate:
         return self.automation in {"channel-cdp", "endpoint-cdp"}
 
 
-CHANNEL_BROWSERS = {
-    "chrome": ("Google Chrome", "chrome", "chrome://inspect/#remote-debugging"),
-    "msedge": ("Microsoft Edge", "msedge", "edge://inspect/#remote-debugging"),
+WINDOWS_APP_PATHS = {
+    "msedge.exe": [
+        r"HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\msedge.exe",
+        r"HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\msedge.exe",
+    ],
+    "chrome.exe": [
+        r"HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\chrome.exe",
+        r"HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\chrome.exe",
+    ],
+    "firefox.exe": [
+        r"HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\firefox.exe",
+        r"HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\firefox.exe",
+    ],
+    "opera.exe": [
+        r"HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\opera.exe",
+        r"HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\opera.exe",
+    ],
+    "brave.exe": [
+        r"HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\brave.exe",
+        r"HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\brave.exe",
+    ],
 }
 
 
 def detect_environment() -> DesktopEnvironment:
     if winbridge.is_wsl():
-        return DesktopEnvironment(
-            runtime_os="linux",
-            host_scope="windows",
-            is_wsl=True,
-            desktop="Windows",
-            display_server=os.environ.get("WAYLAND_DISPLAY") and "WSLg/Wayland" or os.environ.get("DISPLAY") and "WSLg/X11" or None,
-        )
-    if sys_platform().startswith("linux"):
+        display = "WSLg/Wayland" if os.environ.get("WAYLAND_DISPLAY") else "WSLg/X11" if os.environ.get("DISPLAY") else None
+        return DesktopEnvironment("linux", "windows", True, "Windows", display)
+    if sys.platform.startswith("linux"):
         desktop = os.environ.get("XDG_CURRENT_DESKTOP") or os.environ.get("DESKTOP_SESSION")
         display = "Wayland" if os.environ.get("WAYLAND_DISPLAY") else "X11" if os.environ.get("DISPLAY") else None
         return DesktopEnvironment("linux", "linux", False, desktop, display)
-    if sys_platform() == "darwin":
+    if sys.platform == "darwin":
         return DesktopEnvironment("macos", "macos", False, "macOS", None)
-    if sys_platform().startswith("win"):
+    if sys.platform.startswith("win"):
         return DesktopEnvironment("windows", "windows", False, "Windows", None)
-    return DesktopEnvironment(sys_platform(), sys_platform(), False, None, None)
-
-
-def sys_platform() -> str:
-    import sys
-    return sys.platform
+    return DesktopEnvironment(sys.platform, sys.platform, False, None, None)
 
 
 def _run(argv: list[str], *, timeout: int = 60) -> subprocess.CompletedProcess[str]:
     try:
         return subprocess.run(argv, text=True, capture_output=True, timeout=timeout)
-    except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
-        raise DesktopBrowserBridgeError(f"Could not execute {argv[0]}: {exc}") from exc
+    except FileNotFoundError as exc:
+        raise DesktopBrowserBridgeError(f"Required command is unavailable: {argv[0]}") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise DesktopBrowserBridgeError(f"Command timed out: {argv[0]}") from exc
 
 
-def _windows_has_command(executable: str) -> bool:
-    script = f"$c = Get-Command '{executable}' -ErrorAction SilentlyContinue; if ($c) {{ Write-Output $c.Source; exit 0 }}; exit 1"
+def _powershell(script: str, *, timeout: int = 30) -> subprocess.CompletedProcess[str]:
+    executable = "powershell.exe" if shutil.which("powershell.exe") else "powershell"
+    return _run([executable, "-NoProfile", "-NonInteractive", "-Command", script], timeout=timeout)
+
+
+def _windows_find_executable(executable: str) -> str | None:
+    registry_paths = WINDOWS_APP_PATHS.get(executable, [])
+    registry_literal = ",".join(f"'{path}'" for path in registry_paths)
+    script = f"""
+$c = Get-Command '{executable}' -ErrorAction SilentlyContinue
+if ($c -and $c.Source) {{ Write-Output $c.Source; exit 0 }}
+$paths = @({registry_literal})
+foreach ($p in $paths) {{
+  try {{
+    $key = Get-Item -Path $p -ErrorAction Stop
+    $value = $key.GetValue('')
+    if ($value -and (Test-Path $value)) {{ Write-Output $value; exit 0 }}
+  }} catch {{}}
+}}
+$common = @(
+  "$env:ProgramFiles\Google\Chrome\Application\chrome.exe",
+  "${{env:ProgramFiles(x86)}}\Google\Chrome\Application\chrome.exe",
+  "$env:LOCALAPPDATA\Google\Chrome\Application\chrome.exe",
+  "$env:ProgramFiles\Microsoft\Edge\Application\msedge.exe",
+  "${{env:ProgramFiles(x86)}}\Microsoft\Edge\Application\msedge.exe",
+  "$env:ProgramFiles\Mozilla Firefox\firefox.exe",
+  "${{env:ProgramFiles(x86)}}\Mozilla Firefox\firefox.exe",
+  "$env:LOCALAPPDATA\Programs\Opera\opera.exe",
+  "$env:LOCALAPPDATA\BraveSoftware\Brave-Browser\Application\brave.exe",
+  "$env:ProgramFiles\BraveSoftware\Brave-Browser\Application\brave.exe"
+)
+foreach ($candidate in $common) {{
+  if ($candidate -and (Split-Path $candidate -Leaf) -ieq '{executable}' -and (Test-Path $candidate)) {{
+    Write-Output $candidate
+    exit 0
+  }}
+}}
+exit 1
+"""
     try:
-        proc = _run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script], timeout=20)
+        proc = _powershell(script, timeout=30)
     except DesktopBrowserBridgeError:
-        return False
-    return proc.returncode == 0
+        return None
+    if proc.returncode != 0:
+        return None
+    lines = (proc.stdout or "").strip().splitlines()
+    return lines[0].strip() if lines else None
 
 
 def _mac_app_exists(name: str) -> bool:
@@ -105,9 +156,10 @@ def detect_browsers(env: DesktopEnvironment | None = None) -> list[BrowserCandid
             ("brave", "Brave", "brave.exe", "endpoint-cdp", None, None),
             ("firefox", "Mozilla Firefox", "firefox.exe", "manual-only", None, None),
         ]
-        for browser_id, label, exe, automation, channel, inspect in checks:
-            if _windows_has_command(exe):
-                values.append(BrowserCandidate(browser_id, label, exe, automation, channel, inspect, "windows"))
+        for browser_id, label, exe_name, automation, channel, inspect in checks:
+            executable = _windows_find_executable(exe_name)
+            if executable:
+                values.append(BrowserCandidate(browser_id, label, executable, automation, channel, inspect, "windows"))
         return values
 
     if env.host_scope == "linux":
@@ -120,9 +172,9 @@ def detect_browsers(env: DesktopEnvironment | None = None) -> list[BrowserCandid
             ("firefox", "Mozilla Firefox", ["firefox"], "manual-only", None, None),
         ]
         for browser_id, label, names, automation, channel, inspect in checks:
-            exe = next((shutil.which(name) for name in names if shutil.which(name)), None)
-            if exe:
-                values.append(BrowserCandidate(browser_id, label, exe, automation, channel, inspect, "linux"))
+            executable = next((shutil.which(name) for name in names if shutil.which(name)), None)
+            if executable:
+                values.append(BrowserCandidate(browser_id, label, executable, automation, channel, inspect, "linux"))
         return values
 
     if env.host_scope == "macos":
@@ -152,26 +204,32 @@ def open_url(url: str, *, browser: BrowserCandidate | None = None, env: DesktopE
     env = env or detect_environment()
     if env.host_scope == "windows":
         if browser and browser.executable:
-            script = f"Start-Process '{browser.executable}' '{url}'"
+            exe = browser.executable.replace("'", "''")
+            target = url.replace("'", "''")
+            script = f"Start-Process -FilePath '{exe}' -ArgumentList @('{target}')"
         else:
-            script = f"Start-Process '{url}'"
-        proc = _run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script], timeout=30)
+            target = url.replace("'", "''")
+            script = f"Start-Process '{target}'"
+        proc = _powershell(script, timeout=30)
         if proc.returncode != 0:
             raise DesktopBrowserBridgeError((proc.stderr or proc.stdout or "Could not open Windows browser").strip())
         return
 
     if env.host_scope == "linux":
         if browser and browser.executable:
-            proc = _run([browser.executable, url], timeout=15)
-            # GUI browsers often keep running/return asynchronously; a timeout is not an auth failure.
-            if proc.returncode not in {0, None}:
-                raise DesktopBrowserBridgeError((proc.stderr or proc.stdout or "Could not open Linux browser").strip())
+            try:
+                subprocess.Popen([browser.executable, url], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            except OSError as exc:
+                raise DesktopBrowserBridgeError(f"Could not open {browser.label}: {exc}") from exc
             return
         opener = shutil.which("xdg-open") or shutil.which("gio") or shutil.which("kde-open5") or shutil.which("kde-open")
         if not opener:
             raise DesktopBrowserBridgeError("No desktop URL opener found (xdg-open/gio/kde-open).")
         argv = [opener, "open", url] if Path(opener).name == "gio" else [opener, url]
-        subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            subprocess.Popen(argv, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except OSError as exc:
+            raise DesktopBrowserBridgeError(f"Could not open desktop URL: {exc}") from exc
         return
 
     if env.host_scope == "macos":
@@ -187,42 +245,54 @@ def open_url(url: str, *, browser: BrowserCandidate | None = None, env: DesktopE
     raise DesktopBrowserBridgeError(f"Unsupported desktop host scope: {env.host_scope}")
 
 
-def _local_node_compatible() -> bool:
-    node = shutil.which("node")
-    npx = shutil.which("npx")
-    if not node or not npx:
+def _node_command(env: DesktopEnvironment) -> tuple[str, str]:
+    if env.host_scope == "windows" and not env.is_wsl:
+        return (shutil.which("node.exe") or shutil.which("node") or "node.exe", shutil.which("npx.cmd") or "npx.cmd")
+    return (shutil.which("node") or "node", shutil.which("npx") or "npx")
+
+
+def _local_node_compatible(env: DesktopEnvironment) -> bool:
+    node, npx = _node_command(env)
+    if not shutil.which(node) and not Path(node).exists():
         return False
-    proc = _run([node, "--version"], timeout=15)
+    if not shutil.which(npx) and not Path(npx).exists():
+        return False
+    try:
+        proc = _run([node, "--version"], timeout=15)
+    except DesktopBrowserBridgeError:
+        return False
     match = re.search(r"(\d+)", proc.stdout or proc.stderr or "")
     return bool(proc.returncode == 0 and match and int(match.group(1)) >= 20)
 
 
 def ensure_host_playwright_cli(env: DesktopEnvironment | None = None) -> None:
     env = env or detect_environment()
-    if env.host_scope == "windows":
+    if env.host_scope == "windows" and env.is_wsl:
         try:
             winbridge.ensure_windows_playwright_cli()
         except winbridge.WindowsBrowserBridgeError as exc:
             raise DesktopBrowserBridgeError(str(exc)) from exc
         return
-    if not _local_node_compatible():
+    if not _local_node_compatible(env):
         raise DesktopBrowserBridgeError(
-            f"{env.host_scope} browser-context mode requires Node.js 20+ and npx in the desktop host environment."
+            f"{env.host_scope} browser-context mode requires Node.js 20+ and npx in the browser host environment."
         )
-    proc = _run(["npx", "--yes", PLAYWRIGHT_CLI_PACKAGE, "--help"], timeout=180)
+    _, npx = _node_command(env)
+    proc = _run([npx, "--yes", PLAYWRIGHT_CLI_PACKAGE, "--help"], timeout=180)
     if proc.returncode != 0:
         raise DesktopBrowserBridgeError((proc.stderr or proc.stdout or "Could not prepare Playwright CLI").strip())
 
 
 def _host_pwcli(args: list[str], *, env: DesktopEnvironment | None = None, timeout: int = 180) -> subprocess.CompletedProcess[str]:
     env = env or detect_environment()
-    if env.host_scope == "windows":
+    if env.host_scope == "windows" and env.is_wsl:
         try:
             return winbridge._pwcli(args, timeout=timeout)
         except winbridge.WindowsBrowserBridgeError as exc:
             raise DesktopBrowserBridgeError(str(exc)) from exc
     ensure_host_playwright_cli(env)
-    proc = _run(["npx", "--yes", PLAYWRIGHT_CLI_PACKAGE, *args], timeout=timeout)
+    _, npx = _node_command(env)
+    proc = _run([npx, "--yes", PLAYWRIGHT_CLI_PACKAGE, *args], timeout=timeout)
     if proc.returncode != 0:
         raise DesktopBrowserBridgeError((proc.stderr or proc.stdout or "Playwright CLI command failed").strip())
     return proc
@@ -246,7 +316,7 @@ def attach_existing_browser(
     session = winbridge.session_name_for(profile)
     if browser.automation == "manual-only":
         raise DesktopBrowserBridgeError(
-            f"{browser.label} can be used to open/login manually, but Playwright cannot attach to the branded Firefox context. "
+            f"{browser.label} can be used to open/login manually, but Playwright cannot attach to its existing branded Firefox context. "
             "Choose Chrome/Edge or another Chromium browser exposing a CDP endpoint for automated Web review."
         )
     if browser.automation == "channel-cdp":
@@ -265,7 +335,7 @@ def attach_existing_browser(
         if browser.automation == "channel-cdp":
             raise DesktopBrowserBridgeError(
                 f"Could not attach to {browser.label}. Open {browser.inspect_url}, enable 'Allow remote debugging for this browser instance', "
-                f"keep the browser running, then retry. Underlying error: {exc}"
+                f"keep the browser running and approve any browser confirmation dialog, then retry. Underlying error: {exc}"
             ) from exc
         raise
     return session
@@ -276,7 +346,6 @@ def open_chatgpt_tab(session: str, *, env: DesktopEnvironment | None = None) -> 
 
 
 def _eval_json(session: str, expression: str, *, env: DesktopEnvironment | None = None) -> dict:
-    import json
     marker = "POWERPACK_JSON:"
     wrapped = f"() => '{marker}' + JSON.stringify(({expression})())"
     proc = _host_pwcli([f"-s={session}", "eval", wrapped], env=env, timeout=120)
@@ -294,7 +363,6 @@ def _eval_json(session: str, expression: str, *, env: DesktopEnvironment | None 
 
 
 def _eval_json_array(session: str, expression: str, *, env: DesktopEnvironment | None = None) -> list[dict]:
-    import json
     marker = "POWERPACK_JSON:"
     wrapped = f"() => '{marker}' + JSON.stringify(({expression})())"
     proc = _host_pwcli([f"-s={session}", "eval", wrapped], env=env, timeout=120)
