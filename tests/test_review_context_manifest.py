@@ -114,7 +114,7 @@ def test_web_prompt_binds_exact_snapshot():
     assert "context_gaps" in prompt
 
 
-def test_manifest_builder_uses_git_snapshot(tmp_path: Path):
+def init_feature_repo(tmp_path: Path) -> tuple[Path, Path, Path]:
     repo = tmp_path / "repo"
     repo.mkdir()
     (repo / ".specify").mkdir()
@@ -132,9 +132,27 @@ def test_manifest_builder_uses_git_snapshot(tmp_path: Path):
     subprocess.run(["git", "commit", "-m", "base"], cwd=repo, check=True, capture_output=True)
     subprocess.run(["git", "checkout", "-b", "001-test"], cwd=repo, check=True, capture_output=True)
     target.write_text("print(2)\n", encoding="utf-8")
+    return repo, feature, target
 
+
+def test_manifest_builder_uses_git_snapshot(tmp_path: Path):
+    repo, feature, _ = init_feature_repo(tmp_path)
     built = protocol.build_manifest(repo, feature, "main")
     assert built["requirements"] == ["FR-001"]
     assert built["changed_files"] == ["src/a.py"]
     assert built["required_context_files"] == ["specs/001-test/spec.md", "src/a.py"]
     assert len(built["review_context"]["snapshot_sha256"]) == 64
+    assert protocol.validate_manifest_freshness(built, repo) == []
+
+
+def test_manifest_freshness_rejects_workspace_change_after_review(tmp_path: Path):
+    repo, feature, target = init_feature_repo(tmp_path)
+    built = protocol.build_manifest(repo, feature, "main")
+    assert protocol.validate_manifest_freshness(built, repo) == []
+
+    target.write_text("print(3)\n", encoding="utf-8")
+
+    errors = protocol.validate_manifest_freshness(built, repo)
+    assert errors
+    assert any("manifest is stale" in error for error in errors)
+    assert protocol.classify_errors(errors) == "BLOCKED_REVIEW_CONTEXT"
