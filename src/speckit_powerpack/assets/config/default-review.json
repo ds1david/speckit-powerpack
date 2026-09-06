@@ -1,9 +1,9 @@
 {
-  "schema_version": 4,
+  "schema_version": 3,
   "mode": "interactive",
   "conversation_strategy": "one-per-pr",
   "deep_review": {
-    "schema_version": "2.1",
+    "schema_version": "2.0",
     "protocol_path": ".specify/powerpack/deep-review-protocol.md",
     "validate_output": true,
     "full_snapshot_each_round": true,
