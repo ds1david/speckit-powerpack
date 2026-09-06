@@ -24,29 +24,7 @@ def _decode(value: bytes | str | None) -> str:
     return winbridge._decode_windows_output(value)
 
 
-def windows_cmd_argv(
-    args: Iterable[str],
-    *,
-    timeout: int = 180,
-) -> subprocess.CompletedProcess[str]:
-    """Execute a Windows command from WSL without shell argument re-parsing.
-
-    Playwright CLI eval/run-code expressions contain spaces, quotes, braces,
-    ampersands and parentheses. Serialize argv as UTF-8 JSON, embed it as
-    Base64 in an EncodedCommand, reconstruct the JSON array directly inside
-    Windows PowerShell, resolve argv[0] with Get-Command, and invoke the
-    remaining elements via array splatting.
-
-    Important: Windows PowerShell 5.1 can preserve a JSON array returned by
-    ConvertFrom-Json as one nested pipeline object when it is wrapped in @(...).
-    Index the decoded array directly instead; otherwise argv[0] stringifies to
-    e.g. 'npx.cmd --yes @playwright/cli@latest --help'.
-    """
-    if not winbridge.is_wsl():
-        raise winbridge.WindowsBrowserBridgeError(
-            "Windows browser-context mode is supported from WSL only."
-        )
-
+def _encoded_powershell_argv(args: Iterable[str]) -> str:
     argv = list(args)
     if not argv:
         raise winbridge.WindowsBrowserBridgeError("Windows command argv cannot be empty.")
@@ -80,8 +58,30 @@ try {{
   exit 1
 }}
 """
-    encoded = base64.b64encode(script.encode("utf-16-le")).decode("ascii")
+    return base64.b64encode(script.encode("utf-16-le")).decode("ascii")
 
+
+def windows_cmd_argv(
+    args: Iterable[str],
+    *,
+    timeout: int = 180,
+) -> subprocess.CompletedProcess[str]:
+    """Execute a finite Windows command from WSL without shell re-parsing.
+
+    Playwright CLI eval/run-code expressions contain spaces, quotes, braces,
+    ampersands and parentheses. Serialize argv as UTF-8 JSON, reconstruct the
+    array inside Windows PowerShell and invoke it via array splatting.
+
+    This function is intentionally for commands expected to terminate. Long-
+    lived attach transports use ``start_windows_cmd_argv`` and are proven ready
+    by probing the named Playwright session instead of waiting for npx to exit.
+    """
+    if not winbridge.is_wsl():
+        raise winbridge.WindowsBrowserBridgeError(
+            "Windows browser-context mode is supported from WSL only."
+        )
+
+    encoded = _encoded_powershell_argv(args)
     try:
         proc = subprocess.run(
             ["powershell.exe", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
@@ -101,6 +101,38 @@ try {{
         stdout=_decode(proc.stdout),
         stderr=_decode(proc.stderr),
     )
+
+
+def start_windows_cmd_argv(args: Iterable[str]) -> subprocess.Popen[bytes]:
+    """Start a long-lived Windows command without waiting for its process tree.
+
+    Extension attach can keep a relay/daemon alive after the browser accepts the
+    connection. Capturing its stdout/stderr and waiting for EOF can therefore
+    make a successful attach look like a timeout. Start it with detached stdio;
+    callers must prove readiness by executing a command against the named
+    Playwright session.
+    """
+    if not winbridge.is_wsl():
+        raise winbridge.WindowsBrowserBridgeError(
+            "Windows browser-context mode is supported from WSL only."
+        )
+
+    encoded = _encoded_powershell_argv(args)
+    try:
+        return subprocess.Popen(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
+            cwd=_windows_local_cwd(),
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except FileNotFoundError as exc:
+        raise winbridge.WindowsBrowserBridgeError("powershell.exe is unavailable from WSL.") from exc
+    except OSError as exc:
+        raise winbridge.WindowsBrowserBridgeError(
+            f"Could not start Windows browser command: {exc}"
+        ) from exc
 
 
 def windows_node_version() -> str | None:
