@@ -10,7 +10,13 @@ from . import cli_account_binding as account_base
 from . import cli_desktop_auth as desktop_auth
 from . import cli_web_review as previous
 from . import repository_context as repoctx
+from . import browser_extension_transport
 
+
+# Apply the host-browser transport after the CLI layers have been imported so
+# configure/validate/project/smoke all share the same extension-aware browser
+# semantics. The patch is idempotent.
+browser_extension_transport.apply()
 
 # All command layers share this module object. Replacing the legacy worktree
 # reader here moves subsequent reads/writes to the user-scoped repository state
