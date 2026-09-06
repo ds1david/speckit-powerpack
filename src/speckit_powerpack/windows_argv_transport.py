@@ -29,14 +29,18 @@ def windows_cmd_argv(
     *,
     timeout: int = 180,
 ) -> subprocess.CompletedProcess[str]:
-    """Execute a Windows command from WSL without cmd.exe argument re-parsing.
+    """Execute a Windows command from WSL without shell argument re-parsing.
 
     Playwright CLI eval/run-code expressions contain spaces, quotes, braces,
-    ampersands and parentheses. Building a cmd.exe command line can split one
-    expression into multiple CLI operands. Serialize argv as UTF-8 JSON, embed
-    it as Base64 in an EncodedCommand, reconstruct an argument array inside
-    Windows PowerShell, resolve the executable with Get-Command, and invoke it
-    with array splatting.
+    ampersands and parentheses. Serialize argv as UTF-8 JSON, embed it as
+    Base64 in an EncodedCommand, reconstruct the JSON array directly inside
+    Windows PowerShell, resolve argv[0] with Get-Command, and invoke the
+    remaining elements via array splatting.
+
+    Important: Windows PowerShell 5.1 can preserve a JSON array returned by
+    ConvertFrom-Json as one nested pipeline object when it is wrapped in @(...).
+    Index the decoded array directly instead; otherwise argv[0] stringifies to
+    e.g. 'npx.cmd --yes @playwright/cli@latest --help'.
     """
     if not winbridge.is_wsl():
         raise winbridge.WindowsBrowserBridgeError(
@@ -51,15 +55,19 @@ def windows_cmd_argv(
     argv_b64 = base64.b64encode(argv_json.encode("utf-8")).decode("ascii")
     script = f"""
 $ErrorActionPreference = 'Stop'
+$ProgressPreference = 'SilentlyContinue'
 $OutputEncoding = [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 $workspace = Join-Path $env:TEMP 'speckit-powerpack-playwright'
 New-Item -ItemType Directory -Force -Path $workspace | Out-Null
 Set-Location -LiteralPath $workspace
 $json = [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{argv_b64}'))
-$argv = @($json | ConvertFrom-Json)
-$exe = [string]$argv[0]
+$decoded = ConvertFrom-Json -InputObject $json
+if ($null -eq $decoded) {{ throw 'Decoded Windows argv is empty.' }}
+$exe = [string]$decoded[0]
 $rest = @()
-if ($argv.Count -gt 1) {{ $rest = @($argv[1..($argv.Count - 1)]) }}
+if ($decoded.Count -gt 1) {{
+  $rest = [string[]]$decoded[1..($decoded.Count - 1)]
+}}
 try {{
   $commandInfo = Get-Command $exe -ErrorAction Stop
   $resolved = if ($commandInfo.Source) {{ [string]$commandInfo.Source }} else {{ [string]$commandInfo.Name }}
@@ -114,13 +122,7 @@ def windows_node_compatible() -> bool:
 
 
 def ensure_windows_playwright_cli() -> None:
-    """Validate the actual Windows Playwright CLI path, not a separate proxy gate.
-
-    If npx can execute @playwright/cli through the same process boundary that
-    attach/eval/run-code will use, Node is necessarily available and usable.
-    This avoids false negatives where a standalone node probe and the real npx
-    execution observe different shell/path behavior.
-    """
+    """Validate the actual Windows Playwright CLI path, not a separate proxy gate."""
     proc = windows_cmd_argv(
         ["npx.cmd", "--yes", winbridge.PLAYWRIGHT_CLI_PACKAGE, "--help"],
         timeout=180,
@@ -143,7 +145,6 @@ def apply() -> None:
         return
     _APPLIED = True
 
-    # Replace the entire WSL -> Windows browser-tool boundary consistently.
     winbridge._windows_cmd = windows_cmd_argv
     winbridge.windows_node_version = windows_node_version
     winbridge.windows_node_compatible = windows_node_compatible
