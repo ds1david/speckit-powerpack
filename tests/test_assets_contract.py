@@ -61,10 +61,10 @@ def test_review_defaults_require_platform_scoped_web_accounts_and_projects():
     assert review["deep_review"]["adversarial_verdict_challenge"] is True
 
 
-def test_playwright_is_a_core_runtime_dependency_and_account_aware_cli_is_entrypoint():
+def test_playwright_is_a_core_runtime_dependency_and_interactive_auth_cli_is_entrypoint():
     pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
     assert 'dependencies = ["playwright>=1.55,<2"]' in pyproject
-    assert 'speckit-powerpack = "speckit_powerpack.cli_account_binding:main"' in pyproject
+    assert 'speckit-powerpack = "speckit_powerpack.cli_interactive_auth:main"' in pyproject
 
 
 def test_deep_review_protocol_and_validator_are_packaged():
