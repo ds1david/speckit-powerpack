@@ -48,19 +48,44 @@ If it fails, STOP with `BLOCKED_CONFIGURATION`. A plain `speckit-powerpack docto
 
 Do not begin review when the mandatory ChatGPT Project Web gate lacks any of:
 
-- Playwright/Chromium readiness;
-- an account-scoped `playwright-account-consent` grant;
-- persistent PowerPack browser profile for the current platform;
+- a configured account-scoped Web-review consent;
+- one supported browser backend for the selected reviewer account;
 - exact Project alias/URL/profile binding;
 - the configured `account_label`/profile identity that will perform the Web review;
+- live browser/session validation when the selected backend is `windows-browser-context`;
 - selected executor availability.
 
-The Playwright profile represents the **ChatGPT account identity** performing Web code review. The Project is a separate context binding. A Project may be registered for multiple accounts, but the repository must select exactly one account/profile for the active review.
+Supported browser backends are:
 
-Typical setup:
+```text
+isolated-playwright
+  -> PowerPack-owned Chromium profile under the current OS namespace
+
+windows-browser-context
+  -> explicit opt-in to the user's already-running Windows Edge/Chrome context
+  -> Playwright CLI attaches through browser-authorized CDP remote debugging
+  -> cookies/tokens/profile data are NOT copied into WSL
+```
+
+The reviewer account identity and Project binding are separate concepts. A Project may be registered for multiple accounts, but the repository must select exactly one account/profile for the active review.
+
+Recommended account setup is interactive:
 
 ```bash
-speckit-powerpack review auth authorize <profile> --account-label <account-label>
+speckit-powerpack review auth configure
+```
+
+The same interactive flow can reconfigure an existing account:
+
+```bash
+speckit-powerpack review auth reconfigure
+```
+
+When an existing valid authorization is selected, the CLI must ask before replacing it.
+
+Then select/bind a Project:
+
+```bash
 speckit-powerpack review project select --profile <profile> --path .
 ```
 
@@ -82,7 +107,7 @@ Switch an already registered Project/account pair:
 speckit-powerpack review project use <alias> --profile <profile> --path .
 ```
 
-Never reuse the default Windows Edge/Chrome user-data directory; PowerPack profiles are intentionally isolated. Reauthorizing/reconfiguring an account profile invalidates its previous Project bindings until those Projects are re-verified.
+For `windows-browser-context`, reuse of the user's Windows Edge/Chrome context is allowed **only after explicit consent** and only while the browser has enabled remote debugging for that instance. Never copy browser cookies, passwords, OAuth tokens or the Windows browser profile into WSL. Reauthorizing/reconfiguring an account invalidates its previous Project bindings until those Projects are re-verified.
 
 ## Terminal UX and model routing
 
@@ -222,11 +247,13 @@ chatgpt_web.enabled = true
 chatgpt_web.authorization = playwright-account-consent
 chatgpt_web.project_url = configured exact Project URL
 chatgpt_web.project_alias = configured local Project alias
-chatgpt_web.profile = configured isolated account profile
+chatgpt_web.profile = configured reviewer-account profile
 chatgpt_web.account_label = configured reviewer-account identity
+chatgpt_web.account_backend = isolated-playwright | windows-browser-context
+chatgpt_web.browser_channel = msedge | chrome   # when windows-browser-context
 ```
 
-The combination `Project + profile/account` is part of the Web review identity. Do not silently substitute another authenticated account even when that account also has access to the same shared Project.
+The combination `Project + profile/account + backend` is part of the Web review identity. Do not silently substitute another authenticated account even when that account also has access to the same shared Project.
 
 Then start review state with the configured Project URL:
 
@@ -310,9 +337,13 @@ Unknown/ambiguous architectures fail closed unless project configuration defines
 
 Run Web review only after Sol has no findings for the current snapshot. The Web reviewer uses the same evidence protocol and schema `2.0`, but is an independent gate and does not inherit trust from Sol.
 
-Use only the exact `profile`, `account_label`, Project alias and Project URL from `.specify/powerpack/review.json`. The selected profile belongs to the current OS/WSL namespace and is separate from the user's normal Edge/Chrome context.
+Use only the exact `profile`, `account_label`, `account_backend`, Project alias and Project URL from `.specify/powerpack/review.json`.
 
-The authenticated ChatGPT account behind that profile defines the Web reviewer identity. For example, if the same shared Project is registered for an owner profile and a collaborator profile, the binding selected with `review project use <alias> --profile <profile>` is authoritative for that review run.
+For `isolated-playwright`, the reviewer uses the PowerPack-owned profile for the current OS/WSL namespace.
+
+For `windows-browser-context`, the reviewer must attach to the configured running Windows Edge/Chrome instance through Playwright CLI/CDP after the user has explicitly enabled remote debugging. The browser's existing authenticated context is used in place; no cookies or credential material may be exported into WSL. If the live attach/session check fails, return `BLOCKED_CONFIGURATION` rather than silently switching to another browser/account/backend.
+
+The authenticated ChatGPT account behind the selected profile defines the Web reviewer identity. For example, if the same shared Project is registered for an owner profile and a collaborator profile, the binding selected with `review project use <alias> --profile <profile>` is authoritative for that review run.
 
 If Web produces findings:
 
@@ -326,7 +357,7 @@ Web finding
   -> fresh Web review
 ```
 
-Both final approvals must refer to the same final snapshot. Missing/stale account authorization or Project binding is `BLOCKED_CONFIGURATION`, never an acceptable Codex-only completion path.
+Both final approvals must refer to the same final snapshot. Missing/stale account authorization, live browser session or Project binding is `BLOCKED_CONFIGURATION`, never an acceptable Codex-only completion path.
 
 ## Usage/session limits
 
@@ -341,7 +372,7 @@ The review converges only when:
 3. all findings from all completed review gates are durable and `RESOLVED` with evidence;
 4. the capability-selected gate passed or was correctly `NOT_APPLICABLE`;
 5. independent Sol/xhigh review approves the current snapshot;
-6. mandatory ChatGPT Project Web review, executed under the configured account/profile identity, approves that exact same final snapshot.
+6. mandatory ChatGPT Project Web review, executed under the configured account/profile/backend identity, approves that exact same final snapshot.
 
 Finish with a compact completion report, the observed routing table, and:
 
@@ -350,6 +381,6 @@ Stage Handoff: COMPLETE
 Próxima etapa: nenhuma
 ```
 
-On missing predecessor use `RETURN -> speckit-implement`; on real earlier-stage problems return to their owner; on operational/reviewer inability use `BLOCKED`; on missing/stale Web account or Project binding use `BLOCKED_CONFIGURATION`; on exhausted review rounds use `BLOCKED_BUDGET`.
+On missing predecessor use `RETURN -> speckit-implement`; on real earlier-stage problems return to their owner; on operational/reviewer inability use `BLOCKED`; on missing/stale Web account/browser/Project binding use `BLOCKED_CONFIGURATION`; on exhausted review rounds use `BLOCKED_BUDGET`.
 
 Never merge, approve a GitHub PR, mark it ready for review, force-push or perform a destructive reset unless a separate explicit user instruction authorizes it.
